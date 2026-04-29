@@ -1,6 +1,9 @@
 # NAME: Alibaba Inner
 # AUTHOR: lwtdzh
 # DOMAIN-SUFFIX: 1
-# TOTAL: 1
+# DOMAIN-KEYWORD: 2
+# TOTAL: 3
 
 DOMAIN-SUFFIX,alibaba-inc.com
+DOMAIN-KEYWORD,aliyun
+DOMAIN-KEYWORD,alibaba
