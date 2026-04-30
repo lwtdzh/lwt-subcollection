@@ -49,6 +49,15 @@ export default {
 		let expire = Math.floor(timestamp / 1000);
 		SUBUpdateTime = env.SUBUPTIME || SUBUpdateTime;
 
+		if (pathname === "/") {
+			return new Response(await homePage(), {
+				status: 200,
+				headers: {
+					'Content-Type': 'text/html; charset=UTF-8',
+				},
+			});
+		}
+
 		if (pathname === "/admin") {
 			const authResponse = authorizeAdmin(request, env);
 			if (authResponse) return authResponse;
@@ -273,31 +282,169 @@ async function ADD(envadd) {
 	return add;
 }
 
-async function nginx() {
+async function homePage() {
 	const text = `
 	<!DOCTYPE html>
-	<html>
+	<html lang="zh-CN">
 	<head>
-	<title>Welcome to nginx!</title>
+	<title>请遵守网络法律法规</title>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<style>
+		:root {
+			color-scheme: light;
+			--bg: #f6f7fb;
+			--panel: #ffffff;
+			--ink: #18202f;
+			--muted: #5c667a;
+			--danger: #d82929;
+			--line: #dfe4ef;
+		}
+		* {
+			box-sizing: border-box;
+		}
 		body {
-			width: 35em;
+			margin: 0;
+			min-height: 100vh;
+			background:
+				radial-gradient(circle at top left, rgba(216, 41, 41, 0.14), transparent 32rem),
+				linear-gradient(135deg, #f8fafc 0%, var(--bg) 48%, #edf1f7 100%);
+			color: var(--ink);
+			font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+			line-height: 1.6;
+		}
+		main {
+			width: min(1080px, calc(100% - 32px));
 			margin: 0 auto;
-			font-family: Tahoma, Verdana, Arial, sans-serif;
+			padding: 48px 0;
+		}
+		.hero {
+			display: grid;
+			grid-template-columns: 160px 1fr;
+			gap: 32px;
+			align-items: center;
+			padding: 40px;
+			background: rgba(255, 255, 255, 0.88);
+			border: 1px solid var(--line);
+			border-radius: 8px;
+			box-shadow: 0 24px 70px rgba(24, 32, 47, 0.10);
+		}
+		.mark {
+			width: 148px;
+			height: 148px;
+			border-radius: 50%;
+			display: grid;
+			place-items: center;
+			background: var(--danger);
+			color: #fff;
+			font-size: 112px;
+			font-weight: 900;
+			line-height: 1;
+			box-shadow: 0 14px 32px rgba(216, 41, 41, 0.28);
+		}
+		h1 {
+			margin: 0;
+			font-size: clamp(30px, 5vw, 64px);
+			line-height: 1.08;
+			letter-spacing: 0;
+		}
+		.subtitle {
+			margin: 18px 0 0;
+			font-size: 22px;
+			color: var(--danger);
+			font-weight: 700;
+		}
+		.theme {
+			margin: 10px 0 0;
+			color: var(--muted);
+			font-size: 17px;
+		}
+		.grid {
+			display: grid;
+			grid-template-columns: repeat(3, minmax(0, 1fr));
+			gap: 18px;
+			margin-top: 24px;
+		}
+		.card {
+			background: var(--panel);
+			border: 1px solid var(--line);
+			border-radius: 8px;
+			padding: 22px;
+			box-shadow: 0 12px 30px rgba(24, 32, 47, 0.06);
+		}
+		.card h2 {
+			margin: 0 0 10px;
+			font-size: 18px;
+			line-height: 1.35;
+		}
+		.card p {
+			margin: 0;
+			color: var(--muted);
+			font-size: 15px;
+		}
+		.card a {
+			display: inline-block;
+			margin-top: 14px;
+			color: var(--danger);
+			font-weight: 700;
+			text-decoration: none;
+		}
+		.notice {
+			margin-top: 24px;
+			padding: 18px 22px;
+			border-left: 5px solid var(--danger);
+			background: #fff7f7;
+			color: #5a1a1a;
+			border-radius: 6px;
+		}
+		@media (max-width: 760px) {
+			main {
+				padding: 24px 0;
+			}
+			.hero {
+				grid-template-columns: 1fr;
+				padding: 28px;
+			}
+			.mark {
+				width: 112px;
+				height: 112px;
+				font-size: 84px;
+			}
+			.grid {
+				grid-template-columns: 1fr;
+			}
 		}
 	</style>
 	</head>
 	<body>
-	<h1>Welcome to nginx!</h1>
-	<p>If you see this page, the nginx web server is successfully installed and
-	working. Further configuration is required.</p>
-	
-	<p>For online documentation and support please refer to
-	<a href="http://nginx.org/">nginx.org</a>.<br/>
-	Commercial support is available at
-	<a href="http://nginx.com/">nginx.com</a>.</p>
-	
-	<p><em>Thank you for using nginx.</em></p>
+	<main>
+		<section class="hero">
+			<div class="mark">!</div>
+			<div>
+				<h1>翻墙违法，危害健康，请自觉遵守法律！</h1>
+				<p class="subtitle">Don't try to bypass the firewall!</p>
+				<p class="theme">请使用合法合规的网络服务，避免擅自建立或使用非法定信道进行国际联网。</p>
+			</div>
+		</section>
+		<section class="grid" aria-label="相关处罚新闻">
+			<article class="card">
+				<h2>检察机关提示违法风险</h2>
+				<p>中山检察在线文章称，利用 VPN 翻墙属于典型违法上网行为，可能受到行政处罚，情节严重还可能构成犯罪。</p>
+				<a href="https://www.zhongshan.jcy.gov.cn/jcjs/dysqjcy/content/23/18887.html" rel="noopener noreferrer">查看来源</a>
+			</article>
+			<article class="card">
+				<h2>个人使用被警告罚款</h2>
+				<p>公开报道曾提到，广东有个人因擅自建立、使用非法定信道进行国际联网，被处以警告并罚款人民币 1000 元。</p>
+				<a href="https://www.rfa.org/mandarin/yataibaodao/meiti/ql2-01072019090753.html" rel="noopener noreferrer">查看来源</a>
+			</article>
+			<article class="card">
+				<h2>多地行政处罚案例</h2>
+				<p>网络法实务圈曾整理 50 个“翻墙”行政处罚案例，涉及使用 VPN、代理软件以及后续违法行为等不同情形。</p>
+				<a href="https://chinadigitaltimes.net/chinese/700670.html" rel="noopener noreferrer">查看来源</a>
+			</article>
+		</section>
+		<div class="notice">本页面仅用于合规提醒。不同地区、不同情节对应的法律后果可能不同，请以现行法律法规和主管机关解释为准。</div>
+	</main>
 	</body>
 	</html>
 	`
