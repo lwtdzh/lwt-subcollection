@@ -107,7 +107,7 @@
 | TGID | `6946912345` | ❌ | 接收TG通知的账户数字ID | 
 | SUBNAME | `CF-Workers-SUB` | ❌ | 订阅名称 |
 | SUBAPI | `SUBAPI.cmliussss.net` | ❌ | clash、singbox等 订阅转换后端 | 
-| SUBCONFIG | [https://raw.github.../ACL4SSR_Online_MultiCountry.ini](https://raw.githubusercontent.com/cmliu/ACL4SSR/main/Clash/config/ACL4SSR_Online_MultiCountry.ini) | ❌ | clash、singbox等 订阅转换配置文件 | 
+| SUBCONFIG | [https://raw.github.../LWT_Custom_Rule.ini](https://raw.githubusercontent.com/lwtdzh/lwt-subcollection/master/LWT_Custom_Rule.ini) | ❌ | clash、singbox等 订阅转换配置文件 |
 
 
 ## ⚠️ 注意事项
