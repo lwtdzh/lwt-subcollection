@@ -38,6 +38,12 @@ export default {
 		subConfig = env.SUBCONFIG || subConfig;
 		FileName = env.SUBNAME || FileName;
 
+		const currentDate = new Date();
+		currentDate.setHours(0, 0, 0, 0);
+		const timeTemp = Math.ceil(currentDate.getTime() / 1000);
+		const fakeToken = await MD5MD5(`${env.ADMIN_PWD || "sub"}${timeTemp}`);
+		const token = url.searchParams.get('token');
+
 		let UD = Math.floor(((timestamp - Date.now()) / timestamp * total * 1099511627776) / 2);
 		total = total * 1099511627776;
 		let expire = Math.floor(timestamp / 1000);
@@ -88,22 +94,34 @@ export default {
 			await sendMessage(`#获取订阅 ${FileName}`, request.headers.get('CF-Connecting-IP'), `UA: ${userAgentHeader}</tg-spoiler>\n域名: ${url.hostname}\n<tg-spoiler>入口: ${url.pathname + url.search}</tg-spoiler>`);
 			const isSubConverterRequest = request.headers.get('subconverter-request') || request.headers.get('subconverter-version') || userAgent.includes('subconverter');
 			let 订阅格式 = 'base64';
-			if (!(userAgent.includes('null') || isSubConverterRequest || userAgent.includes('nekobox') || userAgent.includes(('CF-Workers-SUB').toLowerCase()))) {
-				if (userAgent.includes('sing-box') || userAgent.includes('singbox') || url.searchParams.has('sb') || url.searchParams.has('singbox')) {
+			if (url.searchParams.has('b64') || url.searchParams.has('base64') || token == fakeToken) {
+				订阅格式 = 'base64';
+			} else if (url.searchParams.has('clash')) {
+				订阅格式 = 'clash';
+			} else if (url.searchParams.has('singbox') || url.searchParams.has('sb')) {
+				订阅格式 = 'singbox';
+			} else if (url.searchParams.has('surge')) {
+				订阅格式 = 'surge';
+			} else if (url.searchParams.has('quanx')) {
+				订阅格式 = 'quanx';
+			} else if (url.searchParams.has('loon')) {
+				订阅格式 = 'loon';
+			} else if (!(userAgent.includes('null') || isSubConverterRequest || userAgent.includes('nekobox') || userAgent.includes(('CF-Workers-SUB').toLowerCase()))) {
+				if (userAgent.includes('sing-box') || userAgent.includes('singbox')) {
 					订阅格式 = 'singbox';
-				} else if (userAgent.includes('surge') || url.searchParams.has('surge')) {
+				} else if (userAgent.includes('surge')) {
 					订阅格式 = 'surge';
-				} else if (userAgent.includes('quantumult') || url.searchParams.has('quanx')) {
+				} else if (userAgent.includes('quantumult')) {
 					订阅格式 = 'quanx';
-				} else if (userAgent.includes('loon') || url.searchParams.has('loon')) {
+				} else if (userAgent.includes('loon')) {
 					订阅格式 = 'loon';
-				} else if (userAgent.includes('clash') || userAgent.includes('meta') || userAgent.includes('mihomo') || url.searchParams.has('clash')) {
+				} else if (userAgent.includes('clash') || userAgent.includes('meta') || userAgent.includes('mihomo')) {
 					订阅格式 = 'clash';
 				}
 			}
 
 			let subConverterUrl;
-			let 订阅转换URL = `${url.origin}/sub`;
+			let 订阅转换URL = `${url.origin}/sub?token=${fakeToken}`;
 			//console.log(订阅转换URL);
 			let req_data = MainData;
 
@@ -183,7 +201,7 @@ export default {
 				//"Subscription-Userinfo": `upload=${UD}; download=${UD}; total=${total}; expire=${expire}`,
 			};
 
-			if (订阅格式 == 'base64') {
+			if (订阅格式 == 'base64' || token == fakeToken) {
 				return new Response(base64Data, { headers: responseHeaders });
 			} else if (订阅格式 == 'clash') {
 				subConverterUrl = `${subProtocol}://${subConverter}/sub?target=clash&url=${encodeURIComponent(订阅转换URL)}&insert=false&config=${encodeURIComponent(subConfig)}&emoji=true&list=false&tfo=false&scv=true&fdn=false&sort=false&new_name=true`;
@@ -313,6 +331,20 @@ function base64Decode(str) {
 	const bytes = new Uint8Array(atob(str).split('').map(c => c.charCodeAt(0)));
 	const decoder = new TextDecoder('utf-8');
 	return decoder.decode(bytes);
+}
+
+async function MD5MD5(text) {
+	const encoder = new TextEncoder();
+
+	const firstPass = await crypto.subtle.digest('MD5', encoder.encode(text));
+	const firstPassArray = Array.from(new Uint8Array(firstPass));
+	const firstHex = firstPassArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+	const secondPass = await crypto.subtle.digest('MD5', encoder.encode(firstHex.slice(7, 27)));
+	const secondPassArray = Array.from(new Uint8Array(secondPass));
+	const secondHex = secondPassArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+	return secondHex.toLowerCase();
 }
 
 function clashFix(content) {
