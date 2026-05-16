@@ -1,5 +1,5 @@
 ## 原始工程
-[cmliu/](https://github.com/cmliu/CF-Workers-SUB)
+[cmliu/CF-Workers-SUB](https://github.com/cmliu/CF-Workers-SUB)
 
 
 ## 路由说明
@@ -12,6 +12,7 @@
     - ...
 
 - `/admin`：管理员页面。
+  - 账户就是 admin，密码是设置的环境变量 ADMIN_PWD
 
 ## KV 桶
 KV 桶名字为：KV，大写。
