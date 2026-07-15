@@ -121,3 +121,6 @@ DOMAIN-SUFFIX,v0.app
 DOMAIN-SUFFIX,manus.im
 DOMAIN-SUFFIX,jasper.ai
 DOMAIN-SUFFIX,genspark.ai
+
+# ============ Misc ============
+DOMAIN-SUFFIX,macked.app
