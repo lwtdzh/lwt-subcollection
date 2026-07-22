@@ -222,18 +222,19 @@ export default {
 				return new Response(base64Data, { headers: responseHeaders });
 			}
 
-			// 未设置 SUBAPI：使用内置本地订阅转换器（仅支持 Clash 格式）
+			// 未设置 SUBAPI：使用内置本地订阅转换器（支持 clash / singbox / surge / quanx / loon）
 			if (useLocalConverter) {
-				if (订阅格式 != 'clash') {
-					return new Response(`本地订阅转换器当前仅支持 Clash 格式，无法生成 ${订阅格式} 格式。\n如需其他格式，请在 Cloudflare Pages 环境变量中设置 SUBAPI 指向远程订阅转换后端。`, { status: 400, headers: { "Content-Type": "text/plain;charset=utf-8" } });
+				const 本地支持格式 = ['clash', 'singbox', 'surge', 'quanx', 'loon'];
+				if (!本地支持格式.includes(订阅格式)) {
+					return new Response(`本地订阅转换器暂不支持 ${订阅格式} 格式。\n如需该格式，请在 Cloudflare Pages 环境变量中设置 SUBAPI 指向远程订阅转换后端。`, { status: 400, headers: { "Content-Type": "text/plain;charset=utf-8" } });
 				}
 				try {
 					// 订阅转换URL 形如 "<自身token链接>|<直链1>|<直链2>..."，去掉首个自身链接后即为需要额外抓取的订阅/节点直链
 					const passthroughLinks = 订阅转换URL.split('|').slice(1).filter(item => item && item.trim());
-					let clashContent = await localSubconvert('clash', result, passthroughLinks, subConfig, userAgentHeader, 订阅前缀映射, 所有前缀);
-					clashContent = await clashFix(clashContent);
+					let localContent = await localSubconvert(订阅格式, result, passthroughLinks, subConfig, userAgentHeader, 订阅前缀映射, 所有前缀);
+					if (订阅格式 == 'clash') localContent = await clashFix(localContent);
 					if (!userAgent.includes('mozilla')) responseHeaders["Content-Disposition"] = `attachment; filename*=utf-8''${encodeURIComponent(FileName)}`;
-					return new Response(clashContent, { headers: responseHeaders });
+					return new Response(localContent, { headers: responseHeaders });
 				} catch (error) {
 					console.error('本地订阅转换失败:', error);
 					return new Response(`本地订阅转换失败: ${error && error.message ? error.message : error}`, { status: 502, headers: { "Content-Type": "text/plain;charset=utf-8" } });
@@ -917,7 +918,7 @@ async function KV(request, env, txt = 'ADD.txt', guest) {
 					################################################################<br>
 					订阅转换配置<br>
 					---------------------------------------------------------------<br>
-					SUBAPI（订阅转换后端）: <strong>${useLocalConverter ? '本地内置 JS 转换器（Local，仅支持 Clash）' : `${subProtocol}://${subConverter}`}</strong>${useLocalConverter ? '<br><span style="color:#888;font-size:12px;">当前未设置 SUBAPI，转换在本项目内完成。推荐（可选）远程后端：https://SUBAPI.cmliussss.net —— 在环境变量 SUBAPI 中填写后即启用，可支持 Sing-box / Surge 等更多格式。</span>' : ''}<br>
+					SUBAPI（订阅转换后端）: <strong>${useLocalConverter ? '本地内置 JS 转换器（Local，支持 Clash / Sing-box / Surge / Quantumult X / Loon）' : `${subProtocol}://${subConverter}`}</strong>${useLocalConverter ? '<br><span style="color:#888;font-size:12px;">当前未设置 SUBAPI，转换在本项目内完成。推荐（可选）远程后端：https://SUBAPI.cmliussss.net</span>' : ''}<br>
 					SUBCONFIG（订阅转换配置文件）: <strong>${subConfig}</strong><br>
 					---------------------------------------------------------------<br>
 					################################################################<br>
@@ -1099,7 +1100,8 @@ async function KV(request, env, txt = 'ADD.txt', guest) {
  *   - allPrefixes：所有前缀列表（插入国旗 emoji 时，确保前缀仍在名称最前）
  */
 async function localSubconvert(target, nodeText, passthroughLinks, configUrl, userAgentHeader, prefixMap = {}, allPrefixes = []) {
-	if (target !== 'clash') throw new Error(`本地转换器不支持的目标格式: ${target}`);
+	const SUPPORTED_TARGETS = ['clash', 'singbox', 'surge', 'loon', 'quanx'];
+	if (!SUPPORTED_TARGETS.includes(target)) throw new Error(`本地转换器不支持的目标格式: ${target}`);
 
 	// 1. 收集节点
 	const proxies = [];
@@ -1149,10 +1151,17 @@ async function localSubconvert(target, nodeText, passthroughLinks, configUrl, us
 	const config = await fetchIniConfig(configUrl);
 	// 3. 生成代理组
 	const proxyGroups = buildProxyGroups(config.customProxyGroups, proxies);
-	// 4. 生成规则
+	// 4. 生成结构化规则
 	const rules = await buildRules(config.rulesets);
-	// 5. 输出 Clash 配置
-	return emitClashYaml(proxies, proxyGroups, rules);
+	// 5. 按目标格式输出
+	switch (target) {
+		case 'clash': return emitClashYaml(proxies, proxyGroups, rules);
+		case 'singbox': return emitSingbox(proxies, proxyGroups, rules);
+		case 'surge': return emitSurge(proxies, proxyGroups, rules);
+		case 'loon': return emitLoon(proxies, proxyGroups, rules);
+		case 'quanx': return emitQuanx(proxies, proxyGroups, rules);
+		default: throw new Error(`本地转换器不支持的目标格式: ${target}`);
+	}
 }
 
 // 明文节点分发解析
@@ -1621,10 +1630,11 @@ function buildProxyGroups(defs, proxies) {
 	return groups;
 }
 
-// 根据 ruleset= 定义生成规则（并发抓取远程规则集，保留文件顺序，MATCH 置尾）
+// 根据 ruleset= 定义生成结构化规则（并发抓取远程规则集，保留文件顺序，MATCH 置尾）
+// 返回：[{ t, v, group, noResolve }...]，最后一条为 { t: 'MATCH', group }
 async function buildRules(rulesets) {
 	const rules = [];
-	let finalRule = null;
+	let finalGroup = 'DIRECT';
 	const remoteUrls = [...new Set(rulesets.map(r => r.split(',')[1]).filter(src => src && /^https?:\/\//i.test(src)))];
 	const fetched = {};
 	await Promise.allSettled(remoteUrls.map(async (u) => {
@@ -1637,35 +1647,43 @@ async function buildRules(rulesets) {
 		const src = entry.slice(comma + 1).trim();
 		if (src.startsWith('[]')) {
 			const inline = src.slice(2);
-			if (/^FINAL$/i.test(inline) || /^MATCH$/i.test(inline)) finalRule = `MATCH,${group}`;
-			else rules.push(`${inline},${group}`);
+			if (/^FINAL$/i.test(inline) || /^MATCH$/i.test(inline)) { finalGroup = group; continue; }
+			const r = parseRuleLine(inline);
+			if (r) rules.push({ ...r, group });
 			continue;
 		}
 		const content = fetched[src];
 		if (!content) continue;
 		for (const line of content.split(/\r?\n/)) {
-			const rule = normalizeRuleLine(line, group);
-			if (rule) rules.push(rule);
+			const r = parseRuleLine(line);
+			if (r) rules.push({ ...r, group });
 		}
 	}
-	rules.push(finalRule || 'MATCH,DIRECT');
+	rules.push({ t: 'MATCH', group: finalGroup });
 	return rules;
 }
 
 const SUPPORTED_RULE_TYPES = new Set(['DOMAIN', 'DOMAIN-SUFFIX', 'DOMAIN-KEYWORD', 'DOMAIN-WILDCARD', 'IP-CIDR', 'IP-CIDR6', 'IP6-CIDR', 'GEOIP', 'GEOSITE', 'SRC-IP-CIDR', 'SRC-PORT', 'DST-PORT', 'PROCESS-NAME', 'PROCESS-PATH', 'IP-ASN']);
 
-function normalizeRuleLine(line, group) {
+// 解析单行规则为 { t, v, noResolve }，不支持的类型返回 null
+function parseRuleLine(line) {
 	line = line.trim();
 	if (!line || line.startsWith('#') || line.startsWith(';')) return null;
 	if (line.startsWith('payload:')) return null;
 	if (line.startsWith('- ')) line = line.slice(2).trim().replace(/^['"]|['"]$/g, '');
 	const parts = line.split(',');
-	const type = parts[0].trim().toUpperCase();
-	if (!SUPPORTED_RULE_TYPES.has(type)) return null;
-	const value = parts[1] ? parts[1].trim() : '';
-	if (!value) return null;
+	const t = parts[0].trim().toUpperCase();
+	if (!SUPPORTED_RULE_TYPES.has(t)) return null;
+	const v = parts[1] ? parts[1].trim() : '';
+	if (!v) return null;
 	const noResolve = parts.slice(2).map(s => s.trim().toLowerCase()).includes('no-resolve');
-	return `${type},${value},${group}` + (noResolve ? ',no-resolve' : '');
+	return { t, v, noResolve };
+}
+
+// 将结构化规则转为 Clash 规则字符串
+function clashRuleString(r) {
+	if (r.t === 'MATCH') return `MATCH,${r.group}`;
+	return `${r.t},${r.v},${r.group}` + (r.noResolve ? ',no-resolve' : '');
 }
 
 // 输出 Clash YAML
@@ -1697,7 +1715,7 @@ function emitClashYaml(proxies, proxyGroups, rules) {
 	].join('\n');
 	const proxiesYaml = 'proxies:\n' + proxies.map(p => '  - ' + toFlow(cleanUndefined(p))).join('\n');
 	const groupsYaml = 'proxy-groups:\n' + proxyGroups.map(g => '  - ' + toFlow(cleanUndefined(g))).join('\n');
-	const rulesYaml = 'rules:\n' + rules.map(r => '  - ' + quoteYaml(r)).join('\n');
+	const rulesYaml = 'rules:\n' + rules.map(r => '  - ' + quoteYaml(clashRuleString(r))).join('\n');
 	return [header, proxiesYaml, groupsYaml, rulesYaml].join('\n') + '\n';
 }
 
@@ -1742,41 +1760,400 @@ function insertFlagEmoji(name, allPrefixes) {
 	return matched + flag + ' ' + base;
 }
 
-// 根据节点名称中的地区关键词推断国旗 emoji（常见地区，尽力而为）
+// 将 ISO 3166-1 alpha-2 国家代码转为国旗 emoji
+function codeToFlag(cc) {
+	cc = String(cc || '').toUpperCase();
+	if (!/^[A-Z]{2}$/.test(cc)) return '';
+	return String.fromCodePoint(0x1F1E6 + cc.charCodeAt(0) - 65, 0x1F1E6 + cc.charCodeAt(1) - 65);
+}
+
+// 根据节点名称推断国旗 emoji：
+// 1) 先按国家/地区名称关键词匹配（中文子串 + 英文词边界，忽略大小写）；
+// 2) 若名称不含中文，再尝试匹配名称中独立出现的大写 ISO 国家代码（如 JP、DE、US）。
 function detectRegionFlag(name) {
-	for (const [re, flag] of REGION_FLAGS) {
-		if (re.test(name)) return flag;
+	if (!name) return '';
+	for (const [cc, re] of COUNTRY_NAME_PATTERNS) {
+		if (re.test(name)) return codeToFlag(cc);
+	}
+	if (!/[\u4e00-\u9fff]/.test(name)) {
+		const re = /(?:^|[\s\-_/|,.·()\[\]])([A-Z]{2})(?=$|[\s\-_/|,.·()\[\]0-9])/g;
+		let mm;
+		while ((mm = re.exec(name))) {
+			if (ISO_ALPHA2.has(mm[1])) return codeToFlag(mm[1]);
+		}
 	}
 	return '';
 }
 
-// 顺序敏感：更具体/易混淆的放前面。中文关键词直接匹配，英文国家缩写用边界限定。
-const REGION_FLAGS = [
-	[/香港|HongKong|Hong Kong|\bHK\b|🇭🇰/i, '🇭🇰'],
-	[/台湾|臺灣|Taiwan|\bTW\b/i, '🇹🇼'],
-	[/澳门|Macao|Macau|\bMO\b/i, '🇲🇴'],
-	[/日本|Japan|东京|大阪|\bJP\b/i, '🇯🇵'],
-	[/韩国|首尔|Korea|\bKR\b/i, '🇰🇷'],
-	[/新加坡|狮城|Singapore|\bSG\b/i, '🇸🇬'],
-	[/美国|United States|洛杉矶|硅谷|圣何塞|\bUSA?\b/i, '🇺🇸'],
-	[/英国|United Kingdom|伦敦|\bUK\b|\bGB\b/i, '🇬🇧'],
-	[/德国|Germany|法兰克福|\bDE\b/i, '🇩🇪'],
-	[/法国|France|巴黎|\bFR\b/i, '🇫🇷'],
-	[/荷兰|Netherlands|\bNL\b/i, '🇳🇱'],
-	[/加拿大|Canada|\bCA\b/i, '🇨🇦'],
-	[/澳大利亚|Australia|悉尼|\bAU\b/i, '🇦🇺'],
-	[/俄罗斯|Russia|莫斯科|\bRU\b/i, '🇷🇺'],
-	[/印度|India|\bIN\b/i, '🇮🇳'],
-	[/土耳其|Turkey|\bTR\b/i, '🇹🇷'],
-	[/巴西|Brazil|\bBR\b/i, '🇧🇷'],
-	[/阿联酋|迪拜|\bAE\b/i, '🇦🇪'],
-	[/泰国|Thailand|\bTH\b/i, '🇹🇭'],
-	[/越南|Vietnam|\bVN\b/i, '🇻🇳'],
-	[/马来西亚|Malaysia|\bMY\b/i, '🇲🇾'],
-	[/菲律宾|Philippines|\bPH\b/i, '🇵🇭'],
-	[/印尼|Indonesia|\bID\b/i, '🇮🇩'],
-	[/中国|回国|China|\bCN\b/i, '🇨🇳'],
+function escapeRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+// 国家/地区名称关键词 -> ISO 代码。顺序敏感：中文名存在子串包含关系时，具体者在前（如 印尼 在 印度 前，朝鲜 在 韩国 前）。
+// 英文名自动加词边界，中文名按子串匹配。
+const COUNTRY_DATA = [
+	['KP', ['朝鲜', 'North Korea']],
+	['KR', ['韩国', '大韩民国', '首尔', 'South Korea', 'Korea']],
+	['ID', ['印尼', '印度尼西亚', 'Indonesia']],
+	['IN', ['印度', 'India']],
+	['CN', ['中国', '回国', 'China']],
+	['HK', ['香港', 'Hong Kong', 'HongKong']],
+	['TW', ['台湾', '臺灣', 'Taiwan']],
+	['MO', ['澳门', 'Macao', 'Macau']],
+	['JP', ['日本', 'Japan', '东京', '大阪']],
+	['SG', ['新加坡', '狮城', 'Singapore']],
+	['MY', ['马来西亚', 'Malaysia']],
+	['TH', ['泰国', 'Thailand']],
+	['VN', ['越南', 'Vietnam']],
+	['PH', ['菲律宾', 'Philippines']],
+	['PK', ['巴基斯坦', 'Pakistan']],
+	['BD', ['孟加拉', 'Bangladesh']],
+	['LK', ['斯里兰卡', 'Sri Lanka']],
+	['NP', ['尼泊尔', 'Nepal']],
+	['KH', ['柬埔寨', 'Cambodia']],
+	['LA', ['老挝', 'Laos']],
+	['MM', ['缅甸', 'Myanmar', 'Burma']],
+	['MN', ['蒙古', 'Mongolia']],
+	['KZ', ['哈萨克斯坦', 'Kazakhstan']],
+	['UZ', ['乌兹别克斯坦', 'Uzbekistan']],
+	['KG', ['吉尔吉斯斯坦', 'Kyrgyzstan']],
+	['TJ', ['塔吉克斯坦', 'Tajikistan']],
+	['TM', ['土库曼斯坦', 'Turkmenistan']],
+	['AZ', ['阿塞拜疆', 'Azerbaijan']],
+	['GE', ['格鲁吉亚', 'Georgia']],
+	['AM', ['亚美尼亚', 'Armenia']],
+	['TR', ['土耳其', 'Turkey', 'Turkiye']],
+	['AE', ['阿联酋', '迪拜', 'United Arab Emirates', 'Dubai']],
+	['SA', ['沙特', '沙特阿拉伯', 'Saudi Arabia']],
+	['QA', ['卡塔尔', 'Qatar']],
+	['KW', ['科威特', 'Kuwait']],
+	['BH', ['巴林', 'Bahrain']],
+	['OM', ['阿曼', 'Oman']],
+	['IL', ['以色列', 'Israel']],
+	['JO', ['约旦', 'Jordan']],
+	['LB', ['黎巴嫩', 'Lebanon']],
+	['IQ', ['伊拉克', 'Iraq']],
+	['IR', ['伊朗', 'Iran']],
+	['SY', ['叙利亚', 'Syria']],
+	['YE', ['也门', 'Yemen']],
+	['GB', ['英国', 'United Kingdom', '伦敦', 'Britain', 'England']],
+	['IE', ['爱尔兰', 'Ireland']],
+	['FR', ['法国', 'France', '巴黎']],
+	['DE', ['德国', 'Germany', '法兰克福']],
+	['NL', ['荷兰', 'Netherlands', 'Holland']],
+	['BE', ['比利时', 'Belgium']],
+	['LU', ['卢森堡', 'Luxembourg']],
+	['CH', ['瑞士', 'Switzerland']],
+	['AT', ['奧地利', '奥地利', 'Austria']],
+	['IT', ['意大利', 'Italy']],
+	['ES', ['西班牙', 'Spain']],
+	['PT', ['葡萄牙', 'Portugal']],
+	['GR', ['希腊', 'Greece']],
+	['SE', ['瑞典', 'Sweden']],
+	['NO', ['挪威', 'Norway']],
+	['DK', ['丹麦', 'Denmark']],
+	['FI', ['芬兰', 'Finland']],
+	['IS', ['冰岛', 'Iceland']],
+	['PL', ['波兰', 'Poland']],
+	['CZ', ['捷克', 'Czech', 'Czechia', 'Czech Republic']],
+	['SK', ['斯洛伐克', 'Slovakia']],
+	['HU', ['匈牙利', 'Hungary']],
+	['RO', ['罗马尼亚', 'Romania']],
+	['BG', ['保加利亚', 'Bulgaria']],
+	['HR', ['克罗地亚', 'Croatia']],
+	['SI', ['斯洛文尼亚', 'Slovenia']],
+	['RS', ['塞尔维亚', 'Serbia']],
+	['UA', ['乌克兰', 'Ukraine']],
+	['BY', ['白俄罗斯', 'Belarus']],
+	['RU', ['俄罗斯', 'Russia', '莫斯科']],
+	['EE', ['爱沙尼亚', 'Estonia']],
+	['LV', ['拉脱维亚', 'Latvia']],
+	['LT', ['立陶宛', 'Lithuania']],
+	['MD', ['摩尔多瓦', 'Moldova']],
+	['AL', ['阿尔巴尼亚', 'Albania']],
+	['MK', ['北马其顿', 'Macedonia']],
+	['BA', ['波黑', 'Bosnia']],
+	['ME', ['黑山', 'Montenegro']],
+	['MT', ['马耳他', 'Malta']],
+	['CY', ['塞浦路斯', 'Cyprus']],
+	['US', ['美国', 'United States', '洛杉矶', '硅谷', '圣何塞', '纽约']],
+	['CA', ['加拿大', 'Canada']],
+	['MX', ['墨西哥', 'Mexico']],
+	['BR', ['巴西', 'Brazil']],
+	['AR', ['阿根廷', 'Argentina']],
+	['CL', ['智利', 'Chile']],
+	['CO', ['哥伦比亚', 'Colombia']],
+	['PE', ['秘鲁', 'Peru']],
+	['VE', ['委内瑞拉', 'Venezuela']],
+	['EC', ['厄瓜多尔', 'Ecuador']],
+	['UY', ['乌拉圭', 'Uruguay']],
+	['PY', ['巴拉圭', 'Paraguay']],
+	['BO', ['玻利维亚', 'Bolivia']],
+	['PA', ['巴拿马', 'Panama']],
+	['CR', ['哥斯达黎加', 'Costa Rica']],
+	['GT', ['危地马拉', 'Guatemala']],
+	['CU', ['古巴', 'Cuba']],
+	['DO', ['多米尼加', 'Dominican Republic']],
+	['PR', ['波多黎各', 'Puerto Rico']],
+	['ZA', ['南非', 'South Africa']],
+	['EG', ['埃及', 'Egypt']],
+	['MA', ['摩洛哥', 'Morocco']],
+	['DZ', ['阿尔及利亚', 'Algeria']],
+	['TN', ['突尼斯', 'Tunisia']],
+	['NG', ['尼日利亚', 'Nigeria']],
+	['KE', ['肯尼亚', 'Kenya']],
+	['GH', ['加纳', 'Ghana']],
+	['ET', ['埃塞俄比亚', 'Ethiopia']],
+	['TZ', ['坦桑尼亚', 'Tanzania']],
+	['UG', ['乌干达', 'Uganda']],
+	['AO', ['安哥拉', 'Angola']],
+	['AU', ['澳大利亚', 'Australia', '悉尼']],
+	['NZ', ['新西兰', 'New Zealand']],
 ];
+
+const COUNTRY_NAME_PATTERNS = COUNTRY_DATA.map(([cc, kws]) => [cc, new RegExp(kws.map(k => (/[A-Za-z]/.test(k) && !/[\u4e00-\u9fff]/.test(k)) ? ('(?<![A-Za-z])' + escapeRegExp(k) + '(?![A-Za-z])') : escapeRegExp(k)).join('|'), 'i')]);
+
+// 全部合法 ISO 3166-1 alpha-2 代码（用于名称中大写代码的兼底匹配，覆盖一切 emoji 支持的国家）
+const ISO_ALPHA2 = new Set('AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW'.split(' '));
+
+/* ==================== Sing-box 输出 ==================== */
+function emitSingbox(proxies, proxyGroups, rules) {
+	const mapOut = (n) => n === 'REJECT' ? 'block' : (n === 'DIRECT' ? 'direct' : n);
+	const outbounds = [];
+	const nodeTags = new Set();
+	for (const p of proxies) {
+		const o = clashToSingbox(p);
+		if (o) { outbounds.push(o); nodeTags.add(p.name); }
+	}
+	for (const g of proxyGroups) {
+		const members = (g.proxies || []).map(mapOut).filter(n => n === 'direct' || n === 'block' || nodeTags.has(n) || proxyGroups.some(x => x.name === n));
+		const list = members.length ? members : ['direct'];
+		if (g.type === 'url-test' || g.type === 'fallback' || g.type === 'load-balance') {
+			outbounds.push({ type: 'urltest', tag: g.name, outbounds: list, url: g.url || 'https://www.gstatic.com/generate_204', interval: `${g.interval || 300}s` });
+		} else {
+			outbounds.push({ type: 'selector', tag: g.name, outbounds: list });
+		}
+	}
+	outbounds.push({ type: 'direct', tag: 'direct' });
+	outbounds.push({ type: 'block', tag: 'block' });
+	outbounds.push({ type: 'dns', tag: 'dns-out' });
+
+	const fieldMap = { 'DOMAIN': 'domain', 'DOMAIN-SUFFIX': 'domain_suffix', 'DOMAIN-KEYWORD': 'domain_keyword', 'IP-CIDR': 'ip_cidr', 'IP-CIDR6': 'ip_cidr', 'IP6-CIDR': 'ip_cidr', 'GEOIP': 'geoip', 'GEOSITE': 'geosite' };
+	const routeRules = [{ port: 53, outbound: 'dns-out' }];
+	let finalOut = 'direct';
+	for (const r of rules) {
+		if (r.t === 'MATCH') { finalOut = mapOut(r.group); continue; }
+		const field = fieldMap[r.t];
+		if (!field) continue;
+		const outbound = mapOut(r.group);
+		const last = routeRules[routeRules.length - 1];
+		if (last && last.outbound === outbound && last._field === field) last[field].push(r.v);
+		else routeRules.push({ _field: field, [field]: [r.v], outbound });
+	}
+	const cleanRules = routeRules.map(rr => { const { _field, ...rest } = rr; return rest; });
+
+	const config = {
+		log: { level: 'info', timestamp: true },
+		dns: { servers: [{ tag: 'google', address: 'https://8.8.8.8/dns-query', detour: 'direct' }, { tag: 'local', address: '223.5.5.5', detour: 'direct' }], strategy: 'prefer_ipv4' },
+		inbounds: [{ type: 'mixed', tag: 'mixed-in', listen: '127.0.0.1', listen_port: 2080 }],
+		outbounds,
+		route: { rules: cleanRules, final: finalOut, auto_detect_interface: true },
+	};
+	return JSON.stringify(config, null, 2);
+}
+
+// Clash 代理对象 -> Sing-box outbound
+function clashToSingbox(p) {
+	const base = { tag: p.name, server: p.server, server_port: Number(p.port) };
+	const buildTls = () => {
+		const t = { enabled: true };
+		if (p.servername || p.sni) t.server_name = p.servername || p.sni;
+		if (p['skip-cert-verify']) t.insecure = true;
+		if (p.alpn) t.alpn = p.alpn;
+		if (p['client-fingerprint']) t.utls = { enabled: true, fingerprint: p['client-fingerprint'] };
+		if (p['reality-opts']) t.reality = { enabled: true, public_key: p['reality-opts']['public-key'], short_id: p['reality-opts']['short-id'] };
+		return t;
+	};
+	const buildTransport = () => {
+		if (p.network === 'ws') { const tr = { type: 'ws', path: (p['ws-opts'] && p['ws-opts'].path) || '/' }; const h = p['ws-opts'] && p['ws-opts'].headers; if (h && h.Host) tr.headers = { Host: h.Host }; return tr; }
+		if (p.network === 'grpc') return { type: 'grpc', service_name: (p['grpc-opts'] && p['grpc-opts']['grpc-service-name']) || '' };
+		return undefined;
+	};
+	switch (p.type) {
+		case 'ss': return { type: 'shadowsocks', ...base, method: p.cipher, password: p.password };
+		case 'vmess': { const o = { type: 'vmess', ...base, uuid: p.uuid, security: p.cipher || 'auto', alter_id: Number(p.alterId || 0) }; if (p.tls) o.tls = buildTls(); const tr = buildTransport(); if (tr) o.transport = tr; return o; }
+		case 'vless': { const o = { type: 'vless', ...base, uuid: p.uuid }; if (p.flow) o.flow = p.flow; if (p.tls) o.tls = buildTls(); const tr = buildTransport(); if (tr) o.transport = tr; return o; }
+		case 'trojan': { const o = { type: 'trojan', ...base, password: p.password, tls: buildTls() }; if (!o.tls.server_name) o.tls.server_name = p.server; const tr = buildTransport(); if (tr) o.transport = tr; return o; }
+		case 'hysteria2': { const o = { type: 'hysteria2', ...base, password: p.password, tls: buildTls() }; if (!o.tls.server_name) o.tls.server_name = p.server; if (p.obfs) o.obfs = { type: p.obfs, password: p['obfs-password'] }; return o; }
+		case 'tuic': { const o = { type: 'tuic', ...base, uuid: p.uuid, password: p.password, tls: buildTls() }; if (!o.tls.server_name) o.tls.server_name = p.server; if (p['congestion-controller']) o.congestion_control = p['congestion-controller']; return o; }
+		default: return null; // ssr 等 sing-box 不支持
+	}
+}
+
+/* ==================== Surge 输出 ==================== */
+function emitSurge(proxies, proxyGroups, rules) {
+	const proxyLines = [];
+	const emitted = new Set(['DIRECT', 'REJECT']);
+	for (const p of proxies) {
+		const line = surgeProxyLine(p);
+		if (line) { proxyLines.push(line); emitted.add(p.name); }
+	}
+	const groupNames = new Set(proxyGroups.map(g => g.name));
+	const groupLines = proxyGroups.map(g => surgeGroupLine(g, emitted, groupNames));
+	const ruleLines = [];
+	for (const r of rules) { const s = surgeRuleString(r); if (s) ruleLines.push(s); }
+	const general = ['[General]', 'loglevel = notify', 'dns-server = 223.5.5.5, 119.29.29.29, system', 'skip-proxy = 127.0.0.1, 192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12, localhost, *.local', 'ipv6 = true'].join('\n');
+	return [general, '', '[Proxy]', 'DIRECT = direct', ...proxyLines, '', '[Proxy Group]', ...groupLines, '', '[Rule]', ...ruleLines].join('\n') + '\n';
+}
+
+function surgeWsParams(p) {
+	if (p.network !== 'ws') return '';
+	let s = `, ws=true, ws-path=${(p['ws-opts'] && p['ws-opts'].path) || '/'}`;
+	const h = p['ws-opts'] && p['ws-opts'].headers;
+	if (h && h.Host) s += `, ws-headers=Host:"${h.Host}"`;
+	return s;
+}
+
+function surgeProxyLine(p) {
+	switch (p.type) {
+		case 'ss': return `${p.name} = ss, ${p.server}, ${p.port}, encrypt-method=${p.cipher}, password=${p.password}, udp-relay=true`;
+		case 'vmess': {
+			let s = `${p.name} = vmess, ${p.server}, ${p.port}, username=${p.uuid}`;
+			if (p.tls) s += `, tls=true` + ((p.servername || p.sni) ? `, sni=${p.servername || p.sni}` : '') + (p['skip-cert-verify'] ? `, skip-cert-verify=true` : '');
+			return s + surgeWsParams(p);
+		}
+		case 'trojan': {
+			let s = `${p.name} = trojan, ${p.server}, ${p.port}, password=${p.password}`;
+			if (p.sni || p.servername) s += `, sni=${p.sni || p.servername}`;
+			if (p['skip-cert-verify']) s += `, skip-cert-verify=true`;
+			return s + surgeWsParams(p);
+		}
+		case 'hysteria2': {
+			let s = `${p.name} = hysteria2, ${p.server}, ${p.port}, password=${p.password}`;
+			if (p.sni || p.servername) s += `, sni=${p.sni || p.servername}`;
+			if (p['skip-cert-verify']) s += `, skip-cert-verify=true`;
+			return s;
+		}
+		case 'tuic': {
+			let s = `${p.name} = tuic-v5, ${p.server}, ${p.port}, uuid=${p.uuid}, password=${p.password}`;
+			if (p.sni || p.servername) s += `, sni=${p.sni || p.servername}`;
+			if (p['skip-cert-verify']) s += `, skip-cert-verify=true`;
+			return s;
+		}
+		default: return null; // vless / ssr Surge 不支持
+	}
+}
+
+function surgeGroupLine(g, emitted, groupNames) {
+	const members = (g.proxies || []).filter(n => n === 'DIRECT' || n === 'REJECT' || groupNames.has(n) || emitted.has(n));
+	const list = members.length ? members : ['DIRECT'];
+	let type = g.type === 'load-balance' ? 'url-test' : g.type;
+	if (type === 'url-test' || type === 'fallback') {
+		return `${g.name} = ${type}, ${list.join(', ')}, url=${g.url || 'http://www.gstatic.com/generate_204'}, interval=${g.interval || 300}`;
+	}
+	return `${g.name} = select, ${list.join(', ')}`;
+}
+
+const SURGE_RULE_MAP = { 'DOMAIN': 'DOMAIN', 'DOMAIN-SUFFIX': 'DOMAIN-SUFFIX', 'DOMAIN-KEYWORD': 'DOMAIN-KEYWORD', 'IP-CIDR': 'IP-CIDR', 'IP-CIDR6': 'IP-CIDR6', 'IP6-CIDR': 'IP-CIDR6', 'GEOIP': 'GEOIP', 'DST-PORT': 'DEST-PORT', 'SRC-IP-CIDR': 'SRC-IP', 'PROCESS-NAME': 'PROCESS-NAME' };
+function surgeRuleString(r) {
+	if (r.t === 'MATCH') return `FINAL,${r.group}`;
+	const t = SURGE_RULE_MAP[r.t];
+	if (!t) return null;
+	return `${t},${r.v},${r.group}` + (r.noResolve ? ',no-resolve' : '');
+}
+
+/* ==================== Loon 输出 ==================== */
+function emitLoon(proxies, proxyGroups, rules) {
+	const proxyLines = [];
+	const emitted = new Set(['DIRECT', 'REJECT']);
+	for (const p of proxies) {
+		const line = loonProxyLine(p);
+		if (line) { proxyLines.push(line); emitted.add(p.name); }
+	}
+	const groupNames = new Set(proxyGroups.map(g => g.name));
+	const groupLines = proxyGroups.map(g => surgeGroupLine(g, emitted, groupNames)); // Loon 与 Surge 代理组语法一致
+	const ruleLines = [];
+	for (const r of rules) { const s = surgeRuleString(r); if (s) ruleLines.push(s); } // Loon 规则语法与 Surge 一致
+	const general = ['[General]', 'ipv6 = true', 'dns-server = 223.5.5.5, 119.29.29.29'].join('\n');
+	return [general, '', '[Proxy]', ...proxyLines, '', '[Proxy Group]', ...groupLines, '', '[Rule]', ...ruleLines].join('\n') + '\n';
+}
+
+function loonProxyLine(p) {
+	switch (p.type) {
+		case 'ss': return `${p.name} = Shadowsocks,${p.server},${p.port},${p.cipher},"${p.password}",fast-open=false,udp=true`;
+		case 'vmess': {
+			let s = `${p.name} = vmess,${p.server},${p.port},${p.cipher || 'auto'},"${p.uuid}"`;
+			if (p.network === 'ws') { s += `,transport:ws,path:${(p['ws-opts'] && p['ws-opts'].path) || '/'}`; const h = p['ws-opts'] && p['ws-opts'].headers; if (h && h.Host) s += `,host:${h.Host}`; } else { s += `,transport:tcp`; }
+			if (p.tls) s += `,over-tls:true,tls-name:${p.servername || p.sni || p.server}` + (p['skip-cert-verify'] ? `,skip-cert-verify:true` : '');
+			return s;
+		}
+		case 'trojan': {
+			let s = `${p.name} = trojan,${p.server},${p.port},"${p.password}"`;
+			s += `,tls-name:${p.sni || p.servername || p.server}` + (p['skip-cert-verify'] ? `,skip-cert-verify:true` : '');
+			if (p.network === 'ws') { s += `,transport:ws,path:${(p['ws-opts'] && p['ws-opts'].path) || '/'}`; const h = p['ws-opts'] && p['ws-opts'].headers; if (h && h.Host) s += `,host:${h.Host}`; }
+			return s;
+		}
+		case 'hysteria2': return `${p.name} = Hysteria2,${p.server},${p.port},"${p.password}",sni=${p.sni || p.servername || p.server}` + (p['skip-cert-verify'] ? `,skip-cert-verify=true` : '');
+		case 'vless': {
+			let s = `${p.name} = VLESS,${p.server},${p.port},"${p.uuid}"`;
+			if (p.network === 'ws') { s += `,transport:ws,path:${(p['ws-opts'] && p['ws-opts'].path) || '/'}`; const h = p['ws-opts'] && p['ws-opts'].headers; if (h && h.Host) s += `,host:${h.Host}`; }
+			if (p.tls) s += `,over-tls:true,tls-name:${p.servername || p.sni || p.server}` + (p['skip-cert-verify'] ? `,skip-cert-verify:true` : '');
+			return s;
+		}
+		default: return null;
+	}
+}
+
+/* ==================== Quantumult X 输出 ==================== */
+function emitQuanx(proxies, proxyGroups, rules) {
+	const serverLines = [];
+	const emitted = new Set(['direct', 'reject']);
+	for (const p of proxies) {
+		const line = quanxServerLine(p);
+		if (line) { serverLines.push(line); emitted.add(p.name); }
+	}
+	const groupNames = new Set(proxyGroups.map(g => g.name));
+	const mapM = (n) => n === 'DIRECT' ? 'direct' : (n === 'REJECT' ? 'reject' : n);
+	const policyLines = proxyGroups.map(g => {
+		const members = (g.proxies || []).map(mapM).filter(n => n === 'direct' || n === 'reject' || groupNames.has(n) || emitted.has(n));
+		const list = members.length ? members : ['direct'];
+		if (g.type === 'url-test' || g.type === 'fallback') return `url-latency-benchmark=${g.name}, ${list.join(', ')}, check-interval=${g.interval || 300}, tolerance=${g.tolerance || 100}`;
+		if (g.type === 'load-balance') return `round-robin=${g.name}, ${list.join(', ')}`;
+		return `static=${g.name}, ${list.join(', ')}`;
+	});
+	const filterLines = [];
+	for (const r of rules) { const s = quanxFilterString(r); if (s) filterLines.push(s); }
+	return ['[general]', '', '[dns_server]', 'server=223.5.5.5', 'server=119.29.29.29', '', '[policy]', ...policyLines, '', '[server_local]', ...serverLines, '', '[filter_local]', ...filterLines, '', '[rewrite_local]', '', '[mitm]'].join('\n') + '\n';
+}
+
+function quanxServerLine(p) {
+	switch (p.type) {
+		case 'ss': return `shadowsocks=${p.server}:${p.port}, method=${p.cipher}, password=${p.password}, udp-relay=true, tag=${p.name}`;
+		case 'vmess': {
+			let s = `vmess=${p.server}:${p.port}, method=chacha20-ietf-poly1305, password=${p.uuid}`;
+			if (p.network === 'ws') { s += `, obfs=${p.tls ? 'wss' : 'ws'}, obfs-uri=${(p['ws-opts'] && p['ws-opts'].path) || '/'}`; const h = p['ws-opts'] && p['ws-opts'].headers; if (h && h.Host) s += `, obfs-host=${h.Host}`; }
+			else if (p.tls) s += `, obfs=over-tls`;
+			if (p.tls && (p.servername || p.sni)) s += `, tls-host=${p.servername || p.sni}`;
+			if (p['skip-cert-verify']) s += `, tls-verification=false`;
+			return s + `, tag=${p.name}`;
+		}
+		case 'trojan': {
+			let s = `trojan=${p.server}:${p.port}, password=${p.password}, over-tls=true`;
+			if (p.sni || p.servername) s += `, tls-host=${p.sni || p.servername}`;
+			if (p['skip-cert-verify']) s += `, tls-verification=false`;
+			return s + `, tag=${p.name}`;
+		}
+		case 'http': return null;
+		default: return null; // vless / ssr / hysteria2 / tuic QuanX 不（或不稳定）支持
+	}
+}
+
+const QUANX_RULE_MAP = { 'DOMAIN': 'host', 'DOMAIN-SUFFIX': 'host-suffix', 'DOMAIN-KEYWORD': 'host-keyword', 'IP-CIDR': 'ip-cidr', 'IP-CIDR6': 'ip6-cidr', 'IP6-CIDR': 'ip6-cidr', 'GEOIP': 'geoip' };
+function quanxFilterString(r) {
+	if (r.t === 'MATCH') return `final, ${r.group}`;
+	const t = QUANX_RULE_MAP[r.t];
+	if (!t) return null;
+	return `${t}, ${r.v}, ${r.group}` + (r.noResolve ? ', no-resolve' : '');
+}
+
 
 
 

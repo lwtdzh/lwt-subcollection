@@ -37,5 +37,5 @@ KV 桶名字为：KV，大写。
 | `TGTOKEN` | `6894123456:XXXXXXXXXX0qExVsBPUhHDAbXXXXXqWXgBA` | ❌ | 发送 Telegram 通知的机器人 Token |
 | `TGID` | `6946912345` | ❌ | 接收 Telegram 通知的账户数字 ID |
 | `SUBNAME` | `CF-Workers-SUB` | ❌ | 订阅名称 |
-| `SUBAPI` | `SUBAPI.cmliussss.net` | ❌ | 订阅转换后端。**未设置时默认使用内置的本地 JS 订阅转换器（仅支持 Clash / Clash.Meta 格式，转换在本项目内完成，不再依赖外部后端）**；设置后则改用指定的远程订阅转换后端（可自建 subconverter / psub），并可支持 Sing-box、Surge 等其他格式 |
+| `SUBAPI` | `SUBAPI.cmliussss.net` | ❌ | 订阅转换后端。**未设置时默认使用内置的本地 JS 订阅转换器（支持 Clash / Sing-box / Surge / Quantumult X / Loon 格式，并自动为节点名称添加国旗 emoji，转换在本项目内完成，不再依赖外部后端）**；设置后则改用指定的远程订阅转换后端（可自建 subconverter / psub） |
 | `SUBCONFIG` | `https://raw.github.../LWT_Custom_Rule.ini` | ❌ | Clash、Sing-box 等订阅转换配置文件 |
