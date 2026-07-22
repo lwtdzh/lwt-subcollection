@@ -15,9 +15,10 @@ https://cfxr.eu.org/getSub
 `;
 
 let urls = [];
-let subConverter = "SUBAPI.cmliussss.net"; //在线订阅转换后端，目前使用CM的订阅转换功能。支持自建psub 可自行搭建https://github.com/bulianglin/psub
+let subConverter = "SUBAPI.cmliussss.net"; //在线订阅转换后端。仅当设置了环境变量 SUBAPI 时才会使用远程后端；未设置 SUBAPI 时默认使用内置的本地 JS 订阅转换器（仅支持 Clash 格式）。
 let subConfig = "https://raw.githubusercontent.com/lwtdzh/lwt-subcollection/master/LWT_Custom_Rule.ini"; //订阅配置文件
 let subProtocol = 'https';
+let useLocalConverter = false; //true 表示使用内置本地订阅转换器（未设置 SUBAPI 时），false 表示使用远程订阅转换后端
 
 export default {
 	async fetch(request, env) {
@@ -28,6 +29,7 @@ export default {
 		BotToken = env.TGTOKEN || BotToken;
 		ChatID = env.TGID || ChatID;
 		TG = env.TG || TG;
+		useLocalConverter = !env.SUBAPI; // 未设置 SUBAPI 时启用本地转换器
 		subConverter = env.SUBAPI || subConverter;
 		if (subConverter.includes("http://")) {
 			subConverter = subConverter.split("//")[1];
@@ -91,11 +93,15 @@ export default {
 			let 重新汇总所有链接 = await ADD(MainData + '\n' + urls.join('\n'));
 			let 自建节点 = "";
 			let 订阅链接 = "";
+			let 订阅前缀映射 = {};	// 订阅链接 -> 名称前缀
 			for (let x of 重新汇总所有链接) {
-				if (x.toLowerCase().startsWith('http')) {
-					订阅链接 += x + '\n';
+				const { link, prefix } = 解析前缀标记(x);
+				if (!link) continue;
+				if (link.toLowerCase().startsWith('http')) {
+					订阅链接 += link + '\n';
+					if (prefix) 订阅前缀映射[link] = prefix;
 				} else {
-					自建节点 += x + '\n';
+					自建节点 += 添加节点名称前缀(link, prefix) + '\n';
 				}
 			}
 			MainData = 自建节点;
@@ -144,11 +150,11 @@ export default {
 
 			const 订阅链接数组 = [...new Set(urls)].filter(item => item?.trim?.()); // 去重
 			if (订阅链接数组.length > 0) {
-				const 请求订阅响应内容 = await getSUB(订阅链接数组, request, 追加UA, userAgentHeader);
+				const 请求订阅响应内容 = await getSUB(订阅链接数组, request, 追加UA, userAgentHeader, 订阅前缀映射);
 				console.log(请求订阅响应内容);
 				req_data += 请求订阅响应内容[0].join('\n');
 				订阅转换URL += "|" + 请求订阅响应内容[1];
-				if (订阅格式 == 'base64' && !isSubConverterRequest && 请求订阅响应内容[1].includes('://')) {
+				if (订阅格式 == 'base64' && !isSubConverterRequest && !useLocalConverter && 请求订阅响应内容[1].includes('://')) {
 					subConverterUrl = `${subProtocol}://${subConverter}/sub?target=mixed&url=${encodeURIComponent(请求订阅响应内容[1])}&insert=false&config=${encodeURIComponent(subConfig)}&emoji=true&list=false&tfo=false&scv=true&fdn=false&sort=false&new_name=true`;
 					try {
 						const subConverterResponse = await fetch(subConverterUrl, { headers: { 'User-Agent': 'v2rayN/CF-Workers-SUB  (https://github.com/cmliu/CF-Workers-SUB)' } });
@@ -212,7 +218,27 @@ export default {
 
 			if (订阅格式 == 'base64' || token == fakeToken) {
 				return new Response(base64Data, { headers: responseHeaders });
-			} else if (订阅格式 == 'clash') {
+			}
+
+			// 未设置 SUBAPI：使用内置本地订阅转换器（仅支持 Clash 格式）
+			if (useLocalConverter) {
+				if (订阅格式 != 'clash') {
+					return new Response(`本地订阅转换器当前仅支持 Clash 格式，无法生成 ${订阅格式} 格式。\n如需其他格式，请在 Cloudflare Pages 环境变量中设置 SUBAPI 指向远程订阅转换后端。`, { status: 400, headers: { "Content-Type": "text/plain;charset=utf-8" } });
+				}
+				try {
+					// 订阅转换URL 形如 "<自身token链接>|<直链1>|<直链2>..."，去掉首个自身链接后即为需要额外抓取的订阅/节点直链
+					const passthroughLinks = 订阅转换URL.split('|').slice(1).filter(item => item && item.trim());
+					let clashContent = await localSubconvert('clash', result, passthroughLinks, subConfig, userAgentHeader);
+					clashContent = await clashFix(clashContent);
+					if (!userAgent.includes('mozilla')) responseHeaders["Content-Disposition"] = `attachment; filename*=utf-8''${encodeURIComponent(FileName)}`;
+					return new Response(clashContent, { headers: responseHeaders });
+				} catch (error) {
+					console.error('本地订阅转换失败:', error);
+					return new Response(`本地订阅转换失败: ${error && error.message ? error.message : error}`, { status: 502, headers: { "Content-Type": "text/plain;charset=utf-8" } });
+				}
+			}
+
+			if (订阅格式 == 'clash') {
 				subConverterUrl = `${subProtocol}://${subConverter}/sub?target=clash&url=${encodeURIComponent(订阅转换URL)}&insert=false&config=${encodeURIComponent(subConfig)}&emoji=true&list=false&tfo=false&scv=true&fdn=false&sort=false&new_name=true`;
 			} else if (订阅格式 == 'singbox') {
 				subConverterUrl = `${subProtocol}://${subConverter}/sub?target=singbox&url=${encodeURIComponent(订阅转换URL)}&insert=false&config=${encodeURIComponent(subConfig)}&emoji=true&list=false&tfo=false&scv=true&fdn=false&sort=false&new_name=true`;
@@ -280,6 +306,58 @@ async function ADD(envadd) {
 	const add = addtext.split('\n');
 	//console.log(add);
 	return add;
+}
+
+// 解析行首的 #前缀# 标记，返回去除标记后的链接与前缀
+// 例如: "#ppp#vless://xxx#香港" -> { prefix: "ppp", link: "vless://xxx#香港" }
+//      "#ppp#https://sub.example.com" -> { prefix: "ppp", link: "https://sub.example.com" }
+// 所有节点/订阅链接均以 scheme 开头（vless:// 、http:// 等），不会以 # 开头，
+// 因此行首的 #...# 可以无歧义地作为前缀标记（只消费第一对 #，节点自身的 #名称 片段保留）
+function 解析前缀标记(line) {
+	const trimmed = (line || '').trim();
+	if (trimmed.startsWith('#')) {
+		const end = trimmed.indexOf('#', 1);
+		if (end !== -1) {
+			return {
+				prefix: trimmed.slice(1, end),
+				link: trimmed.slice(end + 1).trim()
+			};
+		}
+	}
+	return { link: trimmed, prefix: '' };
+}
+
+// 给单个节点链接的名称添加前缀，例如名称 abc 加前缀 ppp 后为 pppabc
+function 添加节点名称前缀(nodeLink, prefix) {
+	if (!prefix) return nodeLink;
+	const link = (nodeLink || '').trim();
+	if (!link) return link;
+	// vmess 节点名称保存在 base64 编码的 JSON 的 ps 字段中
+	if (link.toLowerCase().startsWith('vmess://')) {
+		try {
+			const config = JSON.parse(base64Decode(link.slice('vmess://'.length)));
+			config.ps = prefix + (config.ps || '');
+			return 'vmess://' + btoa(unescape(encodeURIComponent(JSON.stringify(config))));
+		} catch (e) {
+			return link;
+		}
+	}
+	// 其余节点（vless/trojan/ss 等）名称位于 # 片段
+	const hashIndex = link.indexOf('#');
+	if (hashIndex === -1) {
+		// 该节点没有名称，直接以前缀作为名称
+		return link + '#' + prefix;
+	}
+	return link.slice(0, hashIndex + 1) + prefix + link.slice(hashIndex + 1);
+}
+
+// 给订阅内容中的每个节点名称添加前缀
+function 应用订阅前缀(content, prefix) {
+	if (!prefix || !content) return content;
+	return content.split('\n').map(line => {
+		if (line.includes('://')) return 添加节点名称前缀(line.trim(), prefix);
+		return line;
+	}).join('\n');
 }
 
 async function homePage() {
@@ -559,7 +637,7 @@ async function proxyURL(proxyURL, url) {
 	return newResponse;
 }
 
-async function getSUB(api, request, 追加UA, userAgentHeader) {
+async function getSUB(api, request, 追加UA, userAgentHeader, 前缀映射 = {}) {
 	if (!api || api.length === 0) {
 		return [];
 	} else api = [...new Set(api)]; // 去重
@@ -609,16 +687,28 @@ async function getSUB(api, request, 追加UA, userAgentHeader) {
 				const content = await response.value || 'null'; // 获取响应的内容
 				if (content.includes('proxies:')) {
 					//console.log('Clash订阅: ' + response.apiUrl);
-					订阅转换URLs += "|" + response.apiUrl; // Clash 配置
+					const 前缀 = 前缀映射[response.apiUrl];
+					const 明文节点 = (前缀 && !useLocalConverter) ? await 订阅转明文节点(response.apiUrl, userAgentHeader) : null;
+					if (明文节点) {
+						newapi += 应用订阅前缀(明文节点, 前缀) + '\n'; // Clash 配置转明文后加前缀
+					} else {
+						订阅转换URLs += "|" + response.apiUrl; // Clash 配置
+					}
 				} else if (content.includes('outbounds"') && content.includes('inbounds"')) {
 					//console.log('Singbox订阅: ' + response.apiUrl);
-					订阅转换URLs += "|" + response.apiUrl; // Singbox 配置
+					const 前缀 = 前缀映射[response.apiUrl];
+					const 明文节点 = (前缀 && !useLocalConverter) ? await 订阅转明文节点(response.apiUrl, userAgentHeader) : null;
+					if (明文节点) {
+						newapi += 应用订阅前缀(明文节点, 前缀) + '\n'; // Singbox 配置转明文后加前缀
+					} else {
+						订阅转换URLs += "|" + response.apiUrl; // Singbox 配置
+					}
 				} else if (content.includes('://')) {
 					//console.log('明文订阅: ' + response.apiUrl);
-					newapi += content + '\n'; // 追加内容
+					newapi += 应用订阅前缀(content, 前缀映射[response.apiUrl]) + '\n'; // 追加内容
 				} else if (isValidBase64(content)) {
 					//console.log('Base64订阅: ' + response.apiUrl);
-					newapi += base64Decode(content) + '\n'; // 解码并追加内容
+					newapi += 应用订阅前缀(base64Decode(content), 前缀映射[response.apiUrl]) + '\n'; // 解码并追加内容
 				} else {
 					const 异常订阅LINK = `trojan://CMLiussss@127.0.0.1:8888?security=tls&allowInsecure=1&type=tcp&headerType=none#%E5%BC%82%E5%B8%B8%E8%AE%A2%E9%98%85%20${response.apiUrl.split('://')[1].split('/')[0]}`;
 					console.log('异常订阅: ' + 异常订阅LINK);
@@ -635,6 +725,24 @@ async function getSUB(api, request, 追加UA, userAgentHeader) {
 	const 订阅内容 = await ADD(newapi + 异常订阅); // 将处理后的内容转换为数组
 	// 返回处理后的结果
 	return [订阅内容, 订阅转换URLs];
+}
+
+// 通过订阅转换后端将 Clash/Sing-box 订阅转为明文节点，以便统一添加名称前缀
+// 转换失败时返回 null，调用方会回退到直接交由转换后端抓取（不加前缀）
+async function 订阅转明文节点(subUrl, userAgentHeader) {
+	try {
+		const convertUrl = `${subProtocol}://${subConverter}/sub?target=mixed&url=${encodeURIComponent(subUrl)}&insert=false&config=${encodeURIComponent(subConfig)}&emoji=true&list=false&tfo=false&scv=true&fdn=false&sort=false&new_name=true`;
+		const resp = await fetch(convertUrl, { headers: { 'User-Agent': `${atob('djJyYXlOLzYuNDU=')} cmliu/CF-Workers-SUB (${userAgentHeader})` } });
+		if (!resp.ok) return null;
+		const text = await resp.text();
+		if (!text) return null;
+		if (text.includes('://')) return text;	// 已是明文节点
+		if (isValidBase64(text)) return base64Decode(text);	// base64 节点
+		return null;
+	} catch (e) {
+		console.log('Clash/Singbox 订阅转明文节点失败: ' + subUrl);
+		return null;
+	}
 }
 
 async function getUrl(request, targetUrl, 追加UA, userAgentHeader) {
@@ -812,6 +920,7 @@ async function KV(request, env, txt = 'ADD.txt', guest) {
 					---------------------------------------------------------------<br>
 					################################################################<br>
 					${FileName} 汇聚订阅编辑: 
+					<div style="color:#666;font-size:12px;margin:6px 0;">提示: 在任意行行首添加 <code>#前缀#</code> 可为该行节点名称批量添加前缀。单节点如 <code>#ppp#vless://xxx#香港</code> 会变为 <code>ppp香港</code>；订阅如 <code>#ppp#https://xxx</code> 则会为该订阅的每个节点名称都加上 <code>ppp</code> 前缀。</div>
 					<div class="editor-container">
 						${hasKV ? `
 						<textarea class="editor" 
@@ -978,3 +1087,635 @@ async function KV(request, env, txt = 'ADD.txt', guest) {
 		});
 	}
 }
+
+/* ==================== 本地订阅转换器（纯 JS 实现，仅支持 Clash / Clash.Meta） ====================
+ * 未设置环境变量 SUBAPI 时启用。输入与远程订阅转换后端保持一致：
+ *   - nodeText：已解码去重的明文节点列表
+ *   - passthroughLinks：需额外抓取的订阅 / 节点直链（Clash / Sing-box / base64 / 明文）
+ *   - configUrl：与 SUBCONFIG 相同的 .ini 规则配置
+ */
+async function localSubconvert(target, nodeText, passthroughLinks, configUrl, userAgentHeader) {
+	if (target !== 'clash') throw new Error(`本地转换器不支持的目标格式: ${target}`);
+
+	// 1. 收集节点
+	const proxies = [];
+	const usedNames = new Set();
+	const addProxy = (p) => {
+		if (!p || !p.name || !p.server || !p.port) return;
+		let name = String(p.name).trim() || `${p.type}-${p.server}`;
+		let unique = name;
+		let i = 1;
+		while (usedNames.has(unique)) unique = `${name} ${++i}`;
+		usedNames.add(unique);
+		p.name = unique;
+		proxies.push(p);
+	};
+
+	// 1a. 明文节点
+	for (const line of String(nodeText || '').split('\n')) {
+		const proxy = parseNodeURI(line.trim());
+		if (proxy) addProxy(proxy);
+	}
+
+	// 1b. 直链（订阅或节点）
+	for (const link of (passthroughLinks || [])) {
+		const u = (link || '').trim();
+		if (!u) continue;
+		if (/^https?:\/\//i.test(u)) {
+			try {
+				const list = await fetchSubNodes(u, userAgentHeader);
+				for (const p of list) addProxy(p);
+			} catch (e) {
+				console.log('本地转换：抓取订阅失败 ' + u);
+			}
+		} else {
+			const proxy = parseNodeURI(u);
+			if (proxy) addProxy(proxy);
+		}
+	}
+
+	if (proxies.length === 0) throw new Error('未解析到任何可用节点');
+
+	// 2. 解析 .ini 配置
+	const config = await fetchIniConfig(configUrl);
+	// 3. 生成代理组
+	const proxyGroups = buildProxyGroups(config.customProxyGroups, proxies);
+	// 4. 生成规则
+	const rules = await buildRules(config.rulesets);
+	// 5. 输出 Clash 配置
+	return emitClashYaml(proxies, proxyGroups, rules);
+}
+
+// 明文节点分发解析
+function parseNodeURI(line) {
+	if (!line || line.startsWith('#') || line.startsWith(';')) return null;
+	if (!line.includes('://')) return null;
+	const scheme = line.split('://')[0].toLowerCase();
+	try {
+		switch (scheme) {
+			case 'vmess': return parseVmess(line);
+			case 'vless': return parseVless(line);
+			case 'ss': return parseSS(line);
+			case 'ssr': return parseSSR(line);
+			case 'trojan': return parseTrojan(line);
+			case 'hysteria2':
+			case 'hy2': return parseHysteria2(line);
+			case 'tuic': return parseTuic(line);
+			default: return null; // 未支持的协议直接跳过
+		}
+	} catch (e) {
+		return null;
+	}
+}
+
+// 宽松 base64 解码（兼容 url-safe 与缺省填充）
+function b64d(str) {
+	str = String(str || '').replace(/-/g, '+').replace(/_/g, '/').replace(/\s/g, '');
+	while (str.length % 4) str += '=';
+	try {
+		const bytes = new Uint8Array(atob(str).split('').map(c => c.charCodeAt(0)));
+		return new TextDecoder('utf-8').decode(bytes);
+	} catch (e) {
+		return '';
+	}
+}
+
+function decodeHashName(hash) {
+	if (!hash) return '';
+	const raw = hash.replace(/^#/, '');
+	try { return decodeURIComponent(raw); } catch (e) { return raw; }
+}
+
+function splitHostPort(hp) {
+	hp = (hp || '').trim();
+	if (hp.startsWith('[')) {
+		const idx = hp.indexOf(']');
+		return { host: hp.slice(1, idx), port: Number(hp.slice(idx + 2)) };
+	}
+	const idx = hp.lastIndexOf(':');
+	return { host: hp.slice(0, idx), port: Number(hp.slice(idx + 1)) };
+}
+
+function parseVmess(line) {
+	const v = JSON.parse(b64d(line.slice('vmess://'.length)));
+	const net = (v.net || 'tcp').toLowerCase();
+	const tls = (v.tls === 'tls' || v.tls === true);
+	const proxy = {
+		name: v.ps || v.add,
+		type: 'vmess',
+		server: v.add,
+		port: Number(v.port),
+		uuid: v.id,
+		alterId: Number(v.aid || 0),
+		cipher: v.scy || 'auto',
+		udp: true,
+		network: net,
+	};
+	if (tls) {
+		proxy.tls = true;
+		if (v.sni || v.host) proxy.servername = v.sni || v.host;
+		if (v.alpn) proxy.alpn = String(v.alpn).split(',').map(s => s.trim()).filter(Boolean);
+		if (v.fp) proxy['client-fingerprint'] = v.fp;
+	}
+	if (net === 'ws') {
+		const opts = { path: v.path || '/' };
+		if (v.host) opts.headers = { Host: v.host };
+		proxy['ws-opts'] = opts;
+	} else if (net === 'grpc') {
+		proxy['grpc-opts'] = { 'grpc-service-name': v.path || '' };
+	} else if (net === 'h2') {
+		proxy['h2-opts'] = { path: v.path || '/', host: v.host ? [v.host] : undefined };
+	}
+	return proxy;
+}
+
+function parseVless(line) {
+	const u = new URL(line);
+	const q = u.searchParams;
+	const security = (q.get('security') || 'none').toLowerCase();
+	const type = (q.get('type') || 'tcp').toLowerCase();
+	const proxy = {
+		name: decodeHashName(u.hash) || u.hostname,
+		type: 'vless',
+		server: u.hostname,
+		port: Number(u.port) || 443,
+		uuid: decodeURIComponent(u.username),
+		udp: true,
+		network: type,
+	};
+	if (q.get('flow')) proxy.flow = q.get('flow');
+	if (security === 'tls' || security === 'reality') {
+		proxy.tls = true;
+		if (q.get('sni') || q.get('peer')) proxy.servername = q.get('sni') || q.get('peer');
+		if (q.get('fp')) proxy['client-fingerprint'] = q.get('fp');
+		if (q.get('alpn')) proxy.alpn = q.get('alpn').split(',').map(s => s.trim()).filter(Boolean);
+	}
+	if (security === 'reality') {
+		const ro = {};
+		if (q.get('pbk')) ro['public-key'] = q.get('pbk');
+		if (q.get('sid')) ro['short-id'] = q.get('sid');
+		proxy['reality-opts'] = ro;
+	}
+	if (type === 'ws') {
+		const opts = { path: q.get('path') || '/' };
+		if (q.get('host')) opts.headers = { Host: q.get('host') };
+		proxy['ws-opts'] = opts;
+	} else if (type === 'grpc') {
+		proxy['grpc-opts'] = { 'grpc-service-name': q.get('serviceName') || q.get('path') || '' };
+	} else if (type === 'h2') {
+		proxy['h2-opts'] = { path: q.get('path') || '/', host: q.get('host') ? [q.get('host')] : undefined };
+	}
+	return proxy;
+}
+
+function parseTrojan(line) {
+	const u = new URL(line);
+	const q = u.searchParams;
+	const type = (q.get('type') || 'tcp').toLowerCase();
+	const proxy = {
+		name: decodeHashName(u.hash) || u.hostname,
+		type: 'trojan',
+		server: u.hostname,
+		port: Number(u.port) || 443,
+		password: decodeURIComponent(u.username),
+		udp: true,
+		network: type,
+	};
+	if (q.get('sni') || q.get('peer')) proxy.sni = q.get('sni') || q.get('peer');
+	if (q.get('allowInsecure') === '1' || q.get('insecure') === '1') proxy['skip-cert-verify'] = true;
+	if (q.get('alpn')) proxy.alpn = q.get('alpn').split(',').map(s => s.trim()).filter(Boolean);
+	if (q.get('fp')) proxy['client-fingerprint'] = q.get('fp');
+	if (type === 'ws') {
+		const opts = { path: q.get('path') || '/' };
+		if (q.get('host')) opts.headers = { Host: q.get('host') };
+		proxy['ws-opts'] = opts;
+	} else if (type === 'grpc') {
+		proxy['grpc-opts'] = { 'grpc-service-name': q.get('serviceName') || '' };
+	}
+	return proxy;
+}
+
+function parseSS(line) {
+	let rest = line.slice('ss://'.length);
+	let name = '';
+	const hashIdx = rest.indexOf('#');
+	if (hashIdx >= 0) { name = decodeHashName(rest.slice(hashIdx)); rest = rest.slice(0, hashIdx); }
+	let pluginQuery = '';
+	const qIdx = rest.indexOf('?');
+	if (qIdx >= 0) { pluginQuery = rest.slice(qIdx + 1); rest = rest.slice(0, qIdx); }
+	let method, password, server, port;
+	if (rest.includes('@')) {
+		const atIdx = rest.lastIndexOf('@');
+		let userinfo = rest.slice(0, atIdx);
+		if (!userinfo.includes(':')) userinfo = b64d(userinfo);
+		const ci = userinfo.indexOf(':');
+		method = userinfo.slice(0, ci);
+		password = userinfo.slice(ci + 1);
+		const hp = splitHostPort(rest.slice(atIdx + 1));
+		server = hp.host; port = hp.port;
+	} else {
+		const decoded = b64d(rest);
+		const atIdx = decoded.lastIndexOf('@');
+		const userinfo = decoded.slice(0, atIdx);
+		const ci = userinfo.indexOf(':');
+		method = userinfo.slice(0, ci);
+		password = userinfo.slice(ci + 1);
+		const hp = splitHostPort(decoded.slice(atIdx + 1));
+		server = hp.host; port = hp.port;
+	}
+	const proxy = { name: name || server, type: 'ss', server, port: Number(port), cipher: method, password, udp: true };
+	if (pluginQuery) {
+		const pq = new URLSearchParams(pluginQuery);
+		const pluginStr = pq.get('plugin');
+		if (pluginStr) {
+			const parts = pluginStr.split(';');
+			const popts = {};
+			for (const seg of parts.slice(1)) {
+				const eq = seg.indexOf('=');
+				if (eq >= 0) popts[seg.slice(0, eq)] = seg.slice(eq + 1);
+			}
+			if (parts[0].includes('obfs')) {
+				proxy.plugin = 'obfs';
+				proxy['plugin-opts'] = { mode: popts.obfs, host: popts['obfs-host'] };
+			} else if (parts[0].includes('v2ray')) {
+				proxy.plugin = 'v2ray-plugin';
+				proxy['plugin-opts'] = { mode: popts.mode || 'websocket', host: popts.host, path: popts.path, tls: 'tls' in popts };
+			}
+		}
+	}
+	return proxy;
+}
+
+function parseSSR(line) {
+	const decoded = b64d(line.slice('ssr://'.length));
+	const [main, query] = decoded.split('/?');
+	const parts = main.split(':');
+	if (parts.length < 6) return null;
+	const proxy = {
+		name: '',
+		type: 'ssr',
+		server: parts[0],
+		port: Number(parts[1]),
+		protocol: parts[2],
+		cipher: parts[3],
+		obfs: parts[4],
+		password: b64d(parts.slice(5).join(':')),
+		udp: true,
+	};
+	const q = new URLSearchParams(query || '');
+	proxy.name = q.get('remarks') ? b64d(q.get('remarks')) : proxy.server;
+	if (q.get('protoparam')) proxy['protocol-param'] = b64d(q.get('protoparam'));
+	if (q.get('obfsparam')) proxy['obfs-param'] = b64d(q.get('obfsparam'));
+	return proxy;
+}
+
+function parseHysteria2(line) {
+	const u = new URL(line.replace(/^hy2:\/\//i, 'hysteria2://'));
+	const q = u.searchParams;
+	const proxy = {
+		name: decodeHashName(u.hash) || u.hostname,
+		type: 'hysteria2',
+		server: u.hostname,
+		port: Number(u.port) || 443,
+		password: decodeURIComponent(u.username || u.password || ''),
+		udp: true,
+	};
+	if (q.get('sni') || q.get('peer')) proxy.sni = q.get('sni') || q.get('peer');
+	if (q.get('insecure') === '1') proxy['skip-cert-verify'] = true;
+	if (q.get('obfs')) { proxy.obfs = q.get('obfs'); if (q.get('obfs-password')) proxy['obfs-password'] = q.get('obfs-password'); }
+	if (q.get('alpn')) proxy.alpn = q.get('alpn').split(',').map(s => s.trim()).filter(Boolean);
+	return proxy;
+}
+
+function parseTuic(line) {
+	const u = new URL(line);
+	const q = u.searchParams;
+	const proxy = {
+		name: decodeHashName(u.hash) || u.hostname,
+		type: 'tuic',
+		server: u.hostname,
+		port: Number(u.port) || 443,
+		uuid: decodeURIComponent(u.username),
+		password: decodeURIComponent(u.password || ''),
+		udp: true,
+	};
+	if (q.get('sni')) proxy.sni = q.get('sni');
+	if (q.get('congestion_control')) proxy['congestion-controller'] = q.get('congestion_control');
+	if (q.get('udp_relay_mode')) proxy['udp-relay-mode'] = q.get('udp_relay_mode');
+	if (q.get('allow_insecure') === '1' || q.get('insecure') === '1') proxy['skip-cert-verify'] = true;
+	if (q.get('alpn')) proxy.alpn = q.get('alpn').split(',').map(s => s.trim()).filter(Boolean);
+	return proxy;
+}
+
+// 抓取并解析直链订阅为节点数组
+async function fetchSubNodes(url, userAgentHeader) {
+	const resp = await fetch(url, {
+		headers: { 'User-Agent': `${atob('djJyYXlOLzYuNDU=')} cmliu/CF-Workers-SUB (${userAgentHeader || 'CF-Workers-SUB'})` },
+		cf: { insecureSkipVerify: true, allowUntrusted: true, validateCertificate: false }
+	});
+	if (!resp.ok) return [];
+	const text = await resp.text();
+	if (!text) return [];
+	if (text.includes('proxies:')) return parseClashProxies(text);
+	if (text.includes('outbounds') && text.includes('inbounds')) return parseSingboxOutbounds(text);
+	if (text.includes('://')) return text.split('\n').map(l => parseNodeURI(l.trim())).filter(Boolean);
+	if (isValidBase64(text)) return base64Decode(text).split('\n').map(l => parseNodeURI(l.trim())).filter(Boolean);
+	return [];
+}
+
+// 从 Clash 配置中提取流式（flow-style）代理项。块式（多行）代理不在 MVP 支持范围。
+function parseClashProxies(text) {
+	const proxies = [];
+	const lines = text.split(/\r?\n/);
+	let inProxies = false;
+	for (const raw of lines) {
+		if (/^proxies:\s*(\[\s*\])?\s*$/.test(raw)) { inProxies = true; continue; }
+		if (!inProxies) continue;
+		if (/^[^\s#-]/.test(raw) && raw.includes(':')) break; // 下一个顶层键，结束
+		const m = raw.match(/^\s*-\s*(\{.*\})\s*$/);
+		if (m) {
+			const obj = parseFlowMap(m[1]);
+			if (obj && obj.name && obj.server) { obj.port = Number(obj.port); proxies.push(obj); }
+		}
+	}
+	return proxies;
+}
+
+// 宽松的 YAML/JSON flow 映射解析器：{k: v, k2: {..}, k3: [a, b]}
+function parseFlowMap(str) {
+	let i = 0;
+	const skipWs = () => { while (i < str.length && /\s/.test(str[i])) i++; };
+	function parseQuoted(quote) {
+		let s = ''; i++;
+		while (i < str.length && str[i] !== quote) {
+			if (str[i] === '\\' && quote === '"') { s += str[i + 1]; i += 2; } else s += str[i++];
+		}
+		i++;
+		return s;
+	}
+	function parseScalar() {
+		let s = '';
+		while (i < str.length && ',}]'.indexOf(str[i]) === -1) s += str[i++];
+		s = s.trim();
+		if (s === 'true') return true;
+		if (s === 'false') return false;
+		if (s !== '' && /^-?\d+(\.\d+)?$/.test(s)) return Number(s);
+		return s;
+	}
+	function parseValue() {
+		skipWs();
+		const ch = str[i];
+		if (ch === '{') return parseMap();
+		if (ch === '[') return parseList();
+		if (ch === '"' || ch === "'") return parseQuoted(ch);
+		return parseScalar();
+	}
+	function parseMap() {
+		const obj = {}; i++; skipWs();
+		while (i < str.length && str[i] !== '}') {
+			skipWs();
+			let key = '';
+			if (str[i] === '"' || str[i] === "'") key = parseQuoted(str[i]);
+			else { while (i < str.length && str[i] !== ':' && str[i] !== '}') key += str[i++]; key = key.trim(); }
+			skipWs();
+			if (str[i] === ':') i++;
+			obj[key] = parseValue();
+			skipWs();
+			if (str[i] === ',') { i++; skipWs(); }
+		}
+		i++;
+		return obj;
+	}
+	function parseList() {
+		const arr = []; i++; skipWs();
+		while (i < str.length && str[i] !== ']') {
+			arr.push(parseValue());
+			skipWs();
+			if (str[i] === ',') { i++; skipWs(); }
+		}
+		i++;
+		return arr;
+	}
+	try { skipWs(); return str[i] === '{' ? parseMap() : null; } catch (e) { return null; }
+}
+
+// Sing-box outbounds -> Clash 代理（常见类型，尽力而为）
+function parseSingboxOutbounds(text) {
+	let json;
+	try { json = JSON.parse(text); } catch (e) { return []; }
+	const outs = json.outbounds || [];
+	const result = [];
+	for (const o of outs) {
+		const p = singboxToClash(o);
+		if (p) result.push(p);
+	}
+	return result;
+}
+
+function singboxToClash(o) {
+	if (!o || !o.type || !o.server) return null;
+	const base = { name: o.tag || o.server, server: o.server, port: Number(o.server_port || o.port), udp: true };
+	const tls = o.tls || {};
+	const applyTls = (p) => {
+		if (tls.enabled) {
+			p.tls = true;
+			if (tls.server_name) p.servername = tls.server_name;
+			if (tls.insecure) p['skip-cert-verify'] = true;
+			if (tls.alpn) p.alpn = Array.isArray(tls.alpn) ? tls.alpn : [tls.alpn];
+		}
+	};
+	switch (o.type) {
+		case 'vmess': return applyTls(Object.assign(base, { type: 'vmess', uuid: o.uuid, alterId: Number(o.alter_id || 0), cipher: o.security || 'auto' })) || base;
+		case 'vless': { const p = Object.assign(base, { type: 'vless', uuid: o.uuid }); if (o.flow) p.flow = o.flow; applyTls(p); return p; }
+		case 'trojan': { const p = Object.assign(base, { type: 'trojan', password: o.password }); applyTls(p); if (tls.server_name) p.sni = tls.server_name; return p; }
+		case 'shadowsocks': return Object.assign(base, { type: 'ss', cipher: o.method, password: o.password });
+		case 'hysteria2': { const p = Object.assign(base, { type: 'hysteria2', password: o.password }); if (tls.server_name) p.sni = tls.server_name; if (tls.insecure) p['skip-cert-verify'] = true; return p; }
+		case 'tuic': { const p = Object.assign(base, { type: 'tuic', uuid: o.uuid, password: o.password }); if (tls.server_name) p.sni = tls.server_name; if (o.congestion_control) p['congestion-controller'] = o.congestion_control; return p; }
+		default: return null;
+	}
+}
+
+// 带缓存的远程文本抓取（Cache API），降低子请求次数与延迟
+async function cachedFetchText(url) {
+	const cache = caches.default;
+	const cacheKey = new Request(url, { method: 'GET' });
+	let resp = await cache.match(cacheKey);
+	if (!resp) {
+		resp = await fetch(url, { headers: { 'User-Agent': 'clash-verge/CF-Workers-SUB' } });
+		if (!resp.ok) throw new Error(`获取资源失败: ${url} (${resp.status})`);
+		const toCache = new Response(resp.body, resp);
+		toCache.headers.set('Cache-Control', 'max-age=3600');
+		try { await cache.put(cacheKey, toCache.clone()); } catch (e) { /* 部分环境不可缓存，忽略 */ }
+		return await toCache.text();
+	}
+	return await resp.text();
+}
+
+// 解析 .ini 配置，提取 ruleset= 与 custom_proxy_group=
+async function fetchIniConfig(configUrl) {
+	const text = await cachedFetchText(configUrl);
+	const rulesets = [];
+	const customProxyGroups = [];
+	for (let line of text.split(/\r?\n/)) {
+		line = line.trim();
+		if (!line || line.startsWith(';') || line.startsWith('#')) continue;
+		if (line.startsWith('ruleset=')) rulesets.push(line.slice('ruleset='.length));
+		else if (line.startsWith('custom_proxy_group=')) customProxyGroups.push(line.slice('custom_proxy_group='.length));
+	}
+	return { rulesets, customProxyGroups };
+}
+
+// 根据 custom_proxy_group 定义生成代理组
+function buildProxyGroups(defs, proxies) {
+	const allNames = proxies.map(p => p.name);
+	const groups = [];
+	for (const def of defs) {
+		const parts = def.split('`');
+		if (parts.length < 3) continue;
+		const name = parts[0].trim();
+		const type = parts[1].trim();
+		const members = [];
+		let url = null, interval = null, tolerance = null;
+		for (let k = 2; k < parts.length; k++) {
+			const seg = parts[k];
+			if (/^https?:\/\//i.test(seg)) { url = seg.trim(); continue; }
+			if (url && /^\d/.test(seg.trim())) {
+				const nums = seg.split(',');
+				if (nums[0]) interval = Number(nums[0]);
+				if (nums[2]) tolerance = Number(nums[2]);
+				continue;
+			}
+			if (seg.startsWith('[]')) members.push({ ref: seg.slice(2) });
+			else members.push({ filter: seg });
+		}
+		const resolved = [];
+		for (const m of members) {
+			if (m.ref !== undefined) {
+				resolved.push(m.ref);
+			} else {
+				let re = null;
+				try { re = new RegExp(m.filter); } catch (e) { re = null; }
+				if (re) for (const n of allNames) if (re.test(n)) resolved.push(n);
+			}
+		}
+		const seen = new Set();
+		let finalMembers = resolved.filter(n => { if (seen.has(n)) return false; seen.add(n); return true; });
+		if (finalMembers.length === 0) finalMembers = ['DIRECT']; // 避免空组导致配置无效
+		const group = { name, type, proxies: finalMembers };
+		if (type === 'url-test' || type === 'load-balance' || type === 'fallback') {
+			group.url = url || 'http://www.gstatic.com/generate_204';
+			group.interval = interval || 300;
+			if (tolerance != null) group.tolerance = tolerance;
+		}
+		groups.push(group);
+	}
+	return groups;
+}
+
+// 根据 ruleset= 定义生成规则（并发抓取远程规则集，保留文件顺序，MATCH 置尾）
+async function buildRules(rulesets) {
+	const rules = [];
+	let finalRule = null;
+	const remoteUrls = [...new Set(rulesets.map(r => r.split(',')[1]).filter(src => src && /^https?:\/\//i.test(src)))];
+	const fetched = {};
+	await Promise.allSettled(remoteUrls.map(async (u) => {
+		try { fetched[u] = await cachedFetchText(u); } catch (e) { fetched[u] = ''; }
+	}));
+	for (const entry of rulesets) {
+		const comma = entry.indexOf(',');
+		if (comma < 0) continue;
+		const group = entry.slice(0, comma).trim();
+		const src = entry.slice(comma + 1).trim();
+		if (src.startsWith('[]')) {
+			const inline = src.slice(2);
+			if (/^FINAL$/i.test(inline) || /^MATCH$/i.test(inline)) finalRule = `MATCH,${group}`;
+			else rules.push(`${inline},${group}`);
+			continue;
+		}
+		const content = fetched[src];
+		if (!content) continue;
+		for (const line of content.split(/\r?\n/)) {
+			const rule = normalizeRuleLine(line, group);
+			if (rule) rules.push(rule);
+		}
+	}
+	rules.push(finalRule || 'MATCH,DIRECT');
+	return rules;
+}
+
+const SUPPORTED_RULE_TYPES = new Set(['DOMAIN', 'DOMAIN-SUFFIX', 'DOMAIN-KEYWORD', 'DOMAIN-WILDCARD', 'IP-CIDR', 'IP-CIDR6', 'IP6-CIDR', 'GEOIP', 'GEOSITE', 'SRC-IP-CIDR', 'SRC-PORT', 'DST-PORT', 'PROCESS-NAME', 'PROCESS-PATH', 'IP-ASN']);
+
+function normalizeRuleLine(line, group) {
+	line = line.trim();
+	if (!line || line.startsWith('#') || line.startsWith(';')) return null;
+	if (line.startsWith('payload:')) return null;
+	if (line.startsWith('- ')) line = line.slice(2).trim().replace(/^['"]|['"]$/g, '');
+	const parts = line.split(',');
+	const type = parts[0].trim().toUpperCase();
+	if (!SUPPORTED_RULE_TYPES.has(type)) return null;
+	const value = parts[1] ? parts[1].trim() : '';
+	if (!value) return null;
+	const noResolve = parts.slice(2).map(s => s.trim().toLowerCase()).includes('no-resolve');
+	return `${type},${value},${group}` + (noResolve ? ',no-resolve' : '');
+}
+
+// 输出 Clash YAML
+function emitClashYaml(proxies, proxyGroups, rules) {
+	const header = [
+		'mixed-port: 7890',
+		'allow-lan: true',
+		'mode: rule',
+		'log-level: info',
+		'ipv6: true',
+		'external-controller: 127.0.0.1:9090',
+		'dns:',
+		'  enable: true',
+		'  ipv6: true',
+		'  enhanced-mode: fake-ip',
+		'  fake-ip-range: 198.18.0.1/16',
+		'  default-nameserver:',
+		'    - 223.5.5.5',
+		'    - 119.29.29.29',
+		'  nameserver:',
+		'    - https://doh.pub/dns-query',
+		'    - https://dns.alidns.com/dns-query',
+		'  fallback:',
+		'    - https://1.1.1.1/dns-query',
+		'    - https://dns.google/dns-query',
+		'  fallback-filter:',
+		'    geoip: true',
+		'    geoip-code: CN',
+	].join('\n');
+	const proxiesYaml = 'proxies:\n' + proxies.map(p => '  - ' + toFlow(cleanUndefined(p))).join('\n');
+	const groupsYaml = 'proxy-groups:\n' + proxyGroups.map(g => '  - ' + toFlow(cleanUndefined(g))).join('\n');
+	const rulesYaml = 'rules:\n' + rules.map(r => '  - ' + quoteYaml(r)).join('\n');
+	return [header, proxiesYaml, groupsYaml, rulesYaml].join('\n') + '\n';
+}
+
+function cleanUndefined(v) {
+	if (Array.isArray(v)) return v.map(cleanUndefined);
+	if (v && typeof v === 'object') {
+		const o = {};
+		for (const k of Object.keys(v)) {
+			if (v[k] === undefined || v[k] === null) continue;
+			o[k] = cleanUndefined(v[k]);
+		}
+		return o;
+	}
+	return v;
+}
+
+function toFlow(value) {
+	if (Array.isArray(value)) return '[' + value.map(toFlow).join(', ') + ']';
+	if (value && typeof value === 'object') {
+		return '{' + Object.keys(value).map(k => `${flowKey(k)}: ${toFlow(value[k])}`).join(', ') + '}';
+	}
+	if (typeof value === 'boolean' || typeof value === 'number') return String(value);
+	return quoteYaml(String(value));
+}
+
+function flowKey(k) { return /^[A-Za-z0-9_.-]+$/.test(k) ? k : quoteYaml(k); }
+function quoteYaml(s) { return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'; }
+
+
+
