@@ -94,9 +94,11 @@ export default {
 			let 自建节点 = "";
 			let 订阅链接 = "";
 			let 订阅前缀映射 = {};	// 订阅链接 -> 名称前缀
+			let 所有前缀 = [];	// 所有出现过的前缀（本地转换放置国旗 emoji 时用：前缀在最前，emoji 紧随其后）
 			for (let x of 重新汇总所有链接) {
 				const { link, prefix } = 解析前缀标记(x);
 				if (!link) continue;
+				if (prefix) 所有前缀.push(prefix);
 				if (link.toLowerCase().startsWith('http')) {
 					订阅链接 += link + '\n';
 					if (prefix) 订阅前缀映射[link] = prefix;
@@ -228,7 +230,7 @@ export default {
 				try {
 					// 订阅转换URL 形如 "<自身token链接>|<直链1>|<直链2>..."，去掉首个自身链接后即为需要额外抓取的订阅/节点直链
 					const passthroughLinks = 订阅转换URL.split('|').slice(1).filter(item => item && item.trim());
-					let clashContent = await localSubconvert('clash', result, passthroughLinks, subConfig, userAgentHeader);
+					let clashContent = await localSubconvert('clash', result, passthroughLinks, subConfig, userAgentHeader, 订阅前缀映射, 所有前缀);
 					clashContent = await clashFix(clashContent);
 					if (!userAgent.includes('mozilla')) responseHeaders["Content-Disposition"] = `attachment; filename*=utf-8''${encodeURIComponent(FileName)}`;
 					return new Response(clashContent, { headers: responseHeaders });
@@ -915,7 +917,7 @@ async function KV(request, env, txt = 'ADD.txt', guest) {
 					################################################################<br>
 					订阅转换配置<br>
 					---------------------------------------------------------------<br>
-					SUBAPI（订阅转换后端）: <strong>${subProtocol}://${subConverter}</strong><br>
+					SUBAPI（订阅转换后端）: <strong>${useLocalConverter ? '本地内置 JS 转换器（Local，仅支持 Clash）' : `${subProtocol}://${subConverter}`}</strong>${useLocalConverter ? '<br><span style="color:#888;font-size:12px;">当前未设置 SUBAPI，转换在本项目内完成。推荐（可选）远程后端：https://SUBAPI.cmliussss.net —— 在环境变量 SUBAPI 中填写后即启用，可支持 Sing-box / Surge 等更多格式。</span>' : ''}<br>
 					SUBCONFIG（订阅转换配置文件）: <strong>${subConfig}</strong><br>
 					---------------------------------------------------------------<br>
 					################################################################<br>
@@ -1093,8 +1095,10 @@ async function KV(request, env, txt = 'ADD.txt', guest) {
  *   - nodeText：已解码去重的明文节点列表
  *   - passthroughLinks：需额外抓取的订阅 / 节点直链（Clash / Sing-box / base64 / 明文）
  *   - configUrl：与 SUBCONFIG 相同的 .ini 规则配置
+ *   - prefixMap：订阅链接 -> 名称前缀（为 Clash / Sing-box 直链订阅的节点补上前缀）
+ *   - allPrefixes：所有前缀列表（插入国旗 emoji 时，确保前缀仍在名称最前）
  */
-async function localSubconvert(target, nodeText, passthroughLinks, configUrl, userAgentHeader) {
+async function localSubconvert(target, nodeText, passthroughLinks, configUrl, userAgentHeader, prefixMap = {}, allPrefixes = []) {
 	if (target !== 'clash') throw new Error(`本地转换器不支持的目标格式: ${target}`);
 
 	// 1. 收集节点
@@ -1103,6 +1107,7 @@ async function localSubconvert(target, nodeText, passthroughLinks, configUrl, us
 	const addProxy = (p) => {
 		if (!p || !p.name || !p.server || !p.port) return;
 		let name = String(p.name).trim() || `${p.type}-${p.server}`;
+		name = insertFlagEmoji(name, allPrefixes); // 补上国旗 emoji（前缀之后）
 		let unique = name;
 		let i = 1;
 		while (usedNames.has(unique)) unique = `${name} ${++i}`;
@@ -1124,7 +1129,11 @@ async function localSubconvert(target, nodeText, passthroughLinks, configUrl, us
 		if (/^https?:\/\//i.test(u)) {
 			try {
 				const list = await fetchSubNodes(u, userAgentHeader);
-				for (const p of list) addProxy(p);
+				const pfx = prefixMap[u];
+				for (const p of list) {
+					if (pfx && p && p.name) p.name = pfx + p.name; // 为 Clash / Sing-box 订阅节点补上前缀
+					addProxy(p);
+				}
 			} catch (e) {
 				console.log('本地转换：抓取订阅失败 ' + u);
 			}
@@ -1716,6 +1725,59 @@ function toFlow(value) {
 
 function flowKey(k) { return /^[A-Za-z0-9_.-]+$/.test(k) ? k : quoteYaml(k); }
 function quoteYaml(s) { return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'; }
+
+// 国旗 emoji 插入（对齐远程后端 emoji=true 行为，仅用于本地 Clash 输出）：
+// - 若名称已含国旗 emoji，不重复添加；
+// - 若名称以某个前缀开头，则将 emoji 插入到前缀之后，保证前缀仍在最前。
+function insertFlagEmoji(name, allPrefixes) {
+	if (!name) return name;
+	if (/[\u{1F1E6}-\u{1F1FF}]{2}/u.test(name)) return name; // 已有国旗
+	let matched = '';
+	for (const pfx of (allPrefixes || [])) {
+		if (pfx && name.startsWith(pfx) && pfx.length > matched.length) matched = pfx;
+	}
+	const base = matched ? name.slice(matched.length) : name;
+	const flag = detectRegionFlag(base);
+	if (!flag) return name;
+	return matched + flag + ' ' + base;
+}
+
+// 根据节点名称中的地区关键词推断国旗 emoji（常见地区，尽力而为）
+function detectRegionFlag(name) {
+	for (const [re, flag] of REGION_FLAGS) {
+		if (re.test(name)) return flag;
+	}
+	return '';
+}
+
+// 顺序敏感：更具体/易混淆的放前面。中文关键词直接匹配，英文国家缩写用边界限定。
+const REGION_FLAGS = [
+	[/香港|HongKong|Hong Kong|\bHK\b|🇭🇰/i, '🇭🇰'],
+	[/台湾|臺灣|Taiwan|\bTW\b/i, '🇹🇼'],
+	[/澳门|Macao|Macau|\bMO\b/i, '🇲🇴'],
+	[/日本|Japan|东京|大阪|\bJP\b/i, '🇯🇵'],
+	[/韩国|首尔|Korea|\bKR\b/i, '🇰🇷'],
+	[/新加坡|狮城|Singapore|\bSG\b/i, '🇸🇬'],
+	[/美国|United States|洛杉矶|硅谷|圣何塞|\bUSA?\b/i, '🇺🇸'],
+	[/英国|United Kingdom|伦敦|\bUK\b|\bGB\b/i, '🇬🇧'],
+	[/德国|Germany|法兰克福|\bDE\b/i, '🇩🇪'],
+	[/法国|France|巴黎|\bFR\b/i, '🇫🇷'],
+	[/荷兰|Netherlands|\bNL\b/i, '🇳🇱'],
+	[/加拿大|Canada|\bCA\b/i, '🇨🇦'],
+	[/澳大利亚|Australia|悉尼|\bAU\b/i, '🇦🇺'],
+	[/俄罗斯|Russia|莫斯科|\bRU\b/i, '🇷🇺'],
+	[/印度|India|\bIN\b/i, '🇮🇳'],
+	[/土耳其|Turkey|\bTR\b/i, '🇹🇷'],
+	[/巴西|Brazil|\bBR\b/i, '🇧🇷'],
+	[/阿联酋|迪拜|\bAE\b/i, '🇦🇪'],
+	[/泰国|Thailand|\bTH\b/i, '🇹🇭'],
+	[/越南|Vietnam|\bVN\b/i, '🇻🇳'],
+	[/马来西亚|Malaysia|\bMY\b/i, '🇲🇾'],
+	[/菲律宾|Philippines|\bPH\b/i, '🇵🇭'],
+	[/印尼|Indonesia|\bID\b/i, '🇮🇩'],
+	[/中国|回国|China|\bCN\b/i, '🇨🇳'],
+];
+
 
 
 
