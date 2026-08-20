@@ -765,7 +765,9 @@ async function getUrl(request, targetUrl, 追加UA, userAgentHeader) {
 			// 允许自签名证书
 			allowUntrusted: true,
 			// 禁用证书验证
-			validateCertificate: false
+			validateCertificate: false,
+			// 禁用 Cloudflare CDN 缓存，每次实时拉取最新订阅内容
+			cacheTtl: 0
 		}
 	});
 
@@ -1429,7 +1431,7 @@ function parseTuic(line) {
 async function fetchSubNodes(url, userAgentHeader) {
 	const resp = await fetch(url, {
 		headers: { 'User-Agent': `${atob('djJyYXlOLzYuNDU=')} cmliu/CF-Workers-SUB (${userAgentHeader || 'CF-Workers-SUB'})` },
-		cf: { insecureSkipVerify: true, allowUntrusted: true, validateCertificate: false }
+		cf: { insecureSkipVerify: true, allowUntrusted: true, validateCertificate: false, cacheTtl: 0 }
 	});
 	if (!resp.ok) return [];
 	const text = await resp.text();
@@ -1620,11 +1622,13 @@ function buildProxyGroups(defs, proxies) {
 		let finalMembers = resolved.filter(n => { if (seen.has(n)) return false; seen.add(n); return true; });
 		if (finalMembers.length === 0) finalMembers = ['DIRECT']; // 避免空组导致配置无效
 		const group = { name, type, proxies: finalMembers };
-		if (type === 'url-test' || type === 'load-balance' || type === 'fallback') {
-			group.url = url || 'http://www.gstatic.com/generate_204';
-			group.interval = interval || 300;
-			if (tolerance != null) group.tolerance = tolerance;
-		}
+		// 与订阅源保持一致：不使用延迟测试 URL，所有代理组均为手动选择模式
+		// 原代码会为 url-test/load-balance/fallback 添加 url/interval/tolerance
+		// if (type === 'url-test' || type === 'load-balance' || type === 'fallback') {
+		// 	group.url = url || 'http://www.gstatic.com/generate_204';
+		// 	group.interval = interval || 300;
+		// 	if (tolerance != null) group.tolerance = tolerance;
+		// }
 		groups.push(group);
 	}
 	return groups;
