@@ -19,6 +19,7 @@ let subConverter = "SUBAPI.cmliussss.net"; //在线订阅转换后端。仅当�
 let subConfig = "https://raw.githubusercontent.com/lwtdzh/lwt-subcollection/master/LWT_Custom_Rule.ini"; //订阅配置文件
 let subProtocol = 'https';
 let useLocalConverter = false; //true 表示使用内置本地订阅转换器（未设置 SUBAPI 时），false 表示使用远程订阅转换后端
+const DEFAULT_LATENCY_TEST_URL = 'http://www.google.com/generate_204';
 
 export default {
 	async fetch(request, env) {
@@ -1622,13 +1623,11 @@ function buildProxyGroups(defs, proxies) {
 		let finalMembers = resolved.filter(n => { if (seen.has(n)) return false; seen.add(n); return true; });
 		if (finalMembers.length === 0) finalMembers = ['DIRECT']; // 避免空组导致配置无效
 		const group = { name, type, proxies: finalMembers };
-		// 与订阅源保持一致：不使用延迟测试 URL，所有代理组均为手动选择模式
-		// 原代码会为 url-test/load-balance/fallback 添加 url/interval/tolerance
-		// if (type === 'url-test' || type === 'load-balance' || type === 'fallback') {
-		// 	group.url = url || 'http://www.gstatic.com/generate_204';
-		// 	group.interval = interval || 300;
-		// 	if (tolerance != null) group.tolerance = tolerance;
-		// }
+		if (type === 'url-test' || type === 'load-balance' || type === 'fallback') {
+			group.url = url || DEFAULT_LATENCY_TEST_URL;
+			group.interval = interval || 300;
+			if (tolerance != null) group.tolerance = tolerance;
+		}
 		groups.push(group);
 	}
 	return groups;
@@ -1935,7 +1934,7 @@ function emitSingbox(proxies, proxyGroups, rules) {
 		const members = (g.proxies || []).map(mapOut).filter(n => n === 'direct' || n === 'block' || nodeTags.has(n) || proxyGroups.some(x => x.name === n));
 		const list = members.length ? members : ['direct'];
 		if (g.type === 'url-test' || g.type === 'fallback' || g.type === 'load-balance') {
-			outbounds.push({ type: 'urltest', tag: g.name, outbounds: list, url: g.url || 'https://www.gstatic.com/generate_204', interval: `${g.interval || 300}s` });
+			outbounds.push({ type: 'urltest', tag: g.name, outbounds: list, url: g.url || DEFAULT_LATENCY_TEST_URL, interval: `${g.interval || 300}s` });
 		} else {
 			outbounds.push({ type: 'selector', tag: g.name, outbounds: list });
 		}
@@ -2055,7 +2054,7 @@ function surgeGroupLine(g, emitted, groupNames) {
 	const list = members.length ? members : ['DIRECT'];
 	let type = g.type === 'load-balance' ? 'url-test' : g.type;
 	if (type === 'url-test' || type === 'fallback') {
-		return `${g.name} = ${type}, ${list.join(', ')}, url=${g.url || 'http://www.gstatic.com/generate_204'}, interval=${g.interval || 300}`;
+		return `${g.name} = ${type}, ${list.join(', ')}, url=${g.url || DEFAULT_LATENCY_TEST_URL}, interval=${g.interval || 300}`;
 	}
 	return `${g.name} = select, ${list.join(', ')}`;
 }
@@ -2161,8 +2160,6 @@ function quanxFilterString(r) {
 	if (!t) return null;
 	return `${t}, ${r.v}, ${r.group}` + (r.noResolve ? ', no-resolve' : '');
 }
-
-
 
 
 
