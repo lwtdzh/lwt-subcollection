@@ -312,15 +312,15 @@ async function ADD(envadd) {
 	return add;
 }
 
-// 解析行首的 #前缀# 标记，返回去除标记后的链接与前缀
-// 例如: "#ppp#vless://xxx#香港" -> { prefix: "ppp", link: "vless://xxx#香港" }
-//      "#ppp#https://sub.example.com" -> { prefix: "ppp", link: "https://sub.example.com" }
-// 所有节点/订阅链接均以 scheme 开头（vless:// 、http:// 等），不会以 # 开头，
-// 因此行首的 #...# 可以无歧义地作为前缀标记（只消费第一对 #，节点自身的 #名称 片段保留）
+// 解析行首的 @前缀@ 标记，返回去除标记后的链接与前缀；行首 # 永远表示注释
+// 例如: "@ppp@vless://xxx#香港" -> { prefix: "ppp", link: "vless://xxx#香港" }
+//      "@ppp@https://sub.example.com" -> { prefix: "ppp", link: "https://sub.example.com" }
+//      "# @ppp@https://sub.example.com" -> { prefix: "", link: "" }
 function 解析前缀标记(line) {
 	const trimmed = (line || '').trim();
-	if (trimmed.startsWith('#')) {
-		const end = trimmed.indexOf('#', 1);
+	if (!trimmed || trimmed.startsWith('#')) return { link: '', prefix: '' };
+	if (trimmed.startsWith('@')) {
+		const end = trimmed.indexOf('@', 1);
 		if (end !== -1) {
 			return {
 				prefix: trimmed.slice(1, end),
@@ -926,7 +926,7 @@ async function KV(request, env, txt = 'ADD.txt', guest) {
 					---------------------------------------------------------------<br>
 					################################################################<br>
 					${FileName} 汇聚订阅编辑: 
-					<div style="color:#666;font-size:12px;margin:6px 0;">提示: 在任意行行首添加 <code>#前缀#</code> 可为该行节点名称批量添加前缀。单节点如 <code>#ppp#vless://xxx#香港</code> 会变为 <code>ppp香港</code>；订阅如 <code>#ppp#https://xxx</code> 则会为该订阅的每个节点名称都加上 <code>ppp</code> 前缀。</div>
+					<div style="color:#666;font-size:12px;margin:6px 0;">提示: 行首 <code>#</code> 表示注释；在任意行行首添加 <code>@前缀@</code> 可为该行节点名称批量添加前缀。单节点如 <code>@ppp@vless://xxx#香港</code> 会变为 <code>ppp香港</code>；订阅如 <code>@ppp@https://xxx</code> 则会为该订阅的每个节点名称都加上 <code>ppp</code> 前缀。</div>
 					<div class="editor-container">
 						${hasKV ? `
 						<textarea class="editor" 
