@@ -95,14 +95,16 @@ export default {
 			let 自建节点 = "";
 			let 订阅链接 = "";
 			let 订阅前缀映射 = {};	// 订阅链接 -> 名称前缀
+			let 订阅筛选映射 = {};	// 订阅链接 -> [{ type, ... }]
 			let 所有前缀 = [];	// 所有出现过的前缀（本地转换放置国旗 emoji 时用：前缀在最前，emoji 紧随其后）
 			for (let x of 重新汇总所有链接) {
-				const { link, prefix } = 解析前缀标记(x);
+				const { link, prefix, filters } = 解析行标记(x);
 				if (!link) continue;
 				if (prefix) 所有前缀.push(prefix);
 				if (link.toLowerCase().startsWith('http')) {
 					订阅链接 += link + '\n';
 					if (prefix) 订阅前缀映射[link] = prefix;
+					if (filters.length) 订阅筛选映射[link] = filters;
 				} else {
 					自建节点 += 添加节点名称前缀(link, prefix) + '\n';
 				}
@@ -153,7 +155,7 @@ export default {
 
 			const 订阅链接数组 = [...new Set(urls)].filter(item => item?.trim?.()); // 去重
 			if (订阅链接数组.length > 0) {
-				const 请求订阅响应内容 = await getSUB(订阅链接数组, request, 追加UA, userAgentHeader, 订阅前缀映射);
+				const 请求订阅响应内容 = await getSUB(订阅链接数组, request, 追加UA, userAgentHeader, 订阅前缀映射, 订阅筛选映射);
 				console.log(请求订阅响应内容);
 				req_data += 请求订阅响应内容[0].join('\n');
 				订阅转换URL += "|" + 请求订阅响应内容[1];
@@ -232,7 +234,7 @@ export default {
 				try {
 					// 订阅转换URL 形如 "<自身token链接>|<直链1>|<直链2>..."，去掉首个自身链接后即为需要额外抓取的订阅/节点直链
 					const passthroughLinks = 订阅转换URL.split('|').slice(1).filter(item => item && item.trim());
-					let localContent = await localSubconvert(订阅格式, result, passthroughLinks, subConfig, userAgentHeader, 订阅前缀映射, 所有前缀);
+					let localContent = await localSubconvert(订阅格式, result, passthroughLinks, subConfig, userAgentHeader, 订阅前缀映射, 所有前缀, 订阅筛选映射);
 					if (订阅格式 == 'clash') localContent = await clashFix(localContent);
 					if (!userAgent.includes('mozilla')) responseHeaders["Content-Disposition"] = `attachment; filename*=utf-8''${encodeURIComponent(FileName)}`;
 					return new Response(localContent, { headers: responseHeaders });
@@ -312,23 +314,59 @@ async function ADD(envadd) {
 	return add;
 }
 
-// 解析行首的 @前缀@ 标记，返回去除标记后的链接与前缀；行首 # 永远表示注释
-// 例如: "@ppp@vless://xxx#香港" -> { prefix: "ppp", link: "vless://xxx#香港" }
-//      "@ppp@https://sub.example.com" -> { prefix: "ppp", link: "https://sub.example.com" }
-//      "# @ppp@https://sub.example.com" -> { prefix: "", link: "" }
-function 解析前缀标记(line) {
-	const trimmed = (line || '').trim();
-	if (!trimmed || trimmed.startsWith('#')) return { link: '', prefix: '' };
-	if (trimmed.startsWith('@')) {
-		const end = trimmed.indexOf('@', 1);
-		if (end !== -1) {
-			return {
-				prefix: trimmed.slice(1, end),
-				link: trimmed.slice(end + 1).trim()
-			};
+// 解析行首修饰符；行首 # 永远表示注释
+// 例如: "@prefix(ppp) vless://xxx#香港" -> { prefix: "ppp", link: "vless://xxx#香港" }
+//      "@limit(5) https://sub.example.com" -> { filters: [{ type: "limit", count: 5, random: false }], link: "https://sub.example.com" }
+//      "@rdedupe(ip) https://sub.example.com" -> 按 server/IP 分组，每组随机保留 1 个节点
+//      "@prefix(ppp) @rlimit(5) https://sub.example.com" -> 名称加 ppp 前缀，并随机保留 5 个节点
+function 解析行标记(line) {
+	let rest = (line || '').trim();
+	const result = { link: '', prefix: '', filters: [] };
+	if (!rest || rest.startsWith('#')) return result;
+
+	for (let i = 0; i < 10; i++) {
+		const limitMatch = rest.match(/^@(r?limit)\(\s*(\d+)\s*\)\s*/i);
+		if (limitMatch) {
+			result.filters.push({
+				type: 'limit',
+				count: Number(limitMatch[2]),
+				random: limitMatch[1].toLowerCase() === 'rlimit'
+			});
+			rest = rest.slice(limitMatch[0].length).trim();
+			continue;
 		}
+
+		const prefixMatch = rest.match(/^@prefix\(\s*([^)]*)\s*\)\s*/i);
+		if (prefixMatch) {
+			result.prefix += prefixMatch[1].trim();
+			rest = rest.slice(prefixMatch[0].length).trim();
+			continue;
+		}
+
+		const dedupeMatch = rest.match(/^@(r?dedupe)\(\s*([a-z0-9_-]+)(?:\s*,\s*(random|first))?\s*\)\s*/i);
+		if (dedupeMatch) {
+			result.filters.push({
+				type: 'dedupe',
+				by: dedupeMatch[2].toLowerCase(),
+				random: dedupeMatch[1].toLowerCase() === 'rdedupe' || (dedupeMatch[3] || '').toLowerCase() === 'random'
+			});
+			rest = rest.slice(dedupeMatch[0].length).trim();
+			continue;
+		}
+
+		if (rest.startsWith('@')) {
+			const end = rest.indexOf('@', 1);
+			if (end !== -1) {
+				result.prefix += rest.slice(1, end);
+				rest = rest.slice(end + 1).trim();
+				continue;
+			}
+		}
+		break;
 	}
-	return { link: trimmed, prefix: '' };
+
+	result.link = rest;
+	return result;
 }
 
 // 给单个节点链接的名称添加前缀，例如名称 abc 加前缀 ppp 后为 pppabc
@@ -362,6 +400,81 @@ function 应用订阅前缀(content, prefix) {
 		if (line.includes('://')) return 添加节点名称前缀(line.trim(), prefix);
 		return line;
 	}).join('\n');
+}
+
+// 对订阅里的节点数量做限制；random=false 保留前 N 个，random=true 随机保留 N 个并维持原有相对顺序
+function 应用节点数量限制(items, limit) {
+	if (!limit || !Number.isFinite(limit.count)) return items;
+	const count = Math.max(0, Math.floor(limit.count));
+	if (items.length <= count) return items.slice();
+	if (!limit.random) return items.slice(0, count);
+	const selected = new Set();
+	while (selected.size < count) selected.add(Math.floor(Math.random() * items.length));
+	return items.filter((_, index) => selected.has(index));
+}
+
+function 应用节点去重(items, dedupe) {
+	if (!dedupe || dedupe.by !== 'ip') return items;
+	const groups = new Map();
+	for (const item of items) {
+		const key = 标准化去重地址(读取节点Server(item));
+		if (!key) continue;
+		if (!groups.has(key)) groups.set(key, []);
+		groups.get(key).push(item);
+	}
+	if (groups.size === 0) return items;
+	const selected = new Set();
+	for (const group of groups.values()) {
+		selected.add(dedupe.random ? group[Math.floor(Math.random() * group.length)] : group[0]);
+	}
+	return items.filter(item => !标准化去重地址(读取节点Server(item)) || selected.has(item));
+}
+
+function 读取节点Server(item) {
+	if (!item) return '';
+	if (item.server) return item.server;
+	if (item.proxy && item.proxy.server) return item.proxy.server;
+	if (item.line) {
+		const proxy = parseNodeURI(item.line);
+		return proxy && proxy.server ? proxy.server : '';
+	}
+	return '';
+}
+
+function 标准化去重地址(server) {
+	return String(server || '').trim().replace(/^\[|\]$/g, '').toLowerCase();
+}
+
+function 应用节点筛选列表(items, filters) {
+	if (!Array.isArray(filters) || !filters.length) return items;
+	return filters.reduce((list, filter) => {
+		if (filter.type === 'limit') return 应用节点数量限制(list, filter);
+		if (filter.type === 'dedupe') return 应用节点去重(list, filter);
+		return list;
+	}, items);
+}
+
+function 应用订阅筛选(content, filters) {
+	if (!Array.isArray(filters) || !filters.length || !content) return content;
+	const nodes = content.split('\n')
+		.map(line => line.trim())
+		.filter(line => line && line.includes('://'))
+		.map(line => ({ line, proxy: parseNodeURI(line) }));
+	return 应用节点筛选列表(nodes, filters).map(item => item.line).join('\n');
+}
+
+function 应用订阅修饰(content, prefix, filters) {
+	return 应用订阅前缀(应用订阅筛选(content, filters), prefix);
+}
+
+function 清理代理组成员(proxyGroups, proxies) {
+	const nodeNames = new Set((proxies || []).map(p => p && p.name).filter(Boolean));
+	const groupNames = new Set((proxyGroups || []).map(g => g && g.name).filter(Boolean));
+	const special = new Set(['DIRECT', 'REJECT', 'direct', 'reject', 'block']);
+	return (proxyGroups || []).map(group => {
+		const members = (group.proxies || []).filter(name => special.has(name) || nodeNames.has(name) || groupNames.has(name));
+		return Object.assign({}, group, { proxies: members.length ? members : ['DIRECT'] });
+	});
 }
 
 async function homePage() {
@@ -641,7 +754,7 @@ async function proxyURL(proxyURL, url) {
 	return newResponse;
 }
 
-async function getSUB(api, request, 追加UA, userAgentHeader, 前缀映射 = {}) {
+async function getSUB(api, request, 追加UA, userAgentHeader, 前缀映射 = {}, 筛选映射 = {}) {
 	if (!api || api.length === 0) {
 		return [];
 	} else api = [...new Set(api)]; // 去重
@@ -692,27 +805,29 @@ async function getSUB(api, request, 追加UA, userAgentHeader, 前缀映射 = {}
 				if (content.includes('proxies:')) {
 					//console.log('Clash订阅: ' + response.apiUrl);
 					const 前缀 = 前缀映射[response.apiUrl];
-					const 明文节点 = (前缀 && !useLocalConverter) ? await 订阅转明文节点(response.apiUrl, userAgentHeader) : null;
+					const 筛选列表 = 筛选映射[response.apiUrl];
+					const 明文节点 = ((前缀 || 筛选列表) && !useLocalConverter) ? await 订阅转明文节点(response.apiUrl, userAgentHeader) : null;
 					if (明文节点) {
-						newapi += 应用订阅前缀(明文节点, 前缀) + '\n'; // Clash 配置转明文后加前缀
+						newapi += 应用订阅修饰(明文节点, 前缀, 筛选列表) + '\n'; // Clash 配置转明文后添加行首修饰符
 					} else {
 						订阅转换URLs += "|" + response.apiUrl; // Clash 配置
 					}
 				} else if (content.includes('outbounds"') && content.includes('inbounds"')) {
 					//console.log('Singbox订阅: ' + response.apiUrl);
 					const 前缀 = 前缀映射[response.apiUrl];
-					const 明文节点 = (前缀 && !useLocalConverter) ? await 订阅转明文节点(response.apiUrl, userAgentHeader) : null;
+					const 筛选列表 = 筛选映射[response.apiUrl];
+					const 明文节点 = ((前缀 || 筛选列表) && !useLocalConverter) ? await 订阅转明文节点(response.apiUrl, userAgentHeader) : null;
 					if (明文节点) {
-						newapi += 应用订阅前缀(明文节点, 前缀) + '\n'; // Singbox 配置转明文后加前缀
+						newapi += 应用订阅修饰(明文节点, 前缀, 筛选列表) + '\n'; // Singbox 配置转明文后添加行首修饰符
 					} else {
 						订阅转换URLs += "|" + response.apiUrl; // Singbox 配置
 					}
 				} else if (content.includes('://')) {
 					//console.log('明文订阅: ' + response.apiUrl);
-					newapi += 应用订阅前缀(content, 前缀映射[response.apiUrl]) + '\n'; // 追加内容
+					newapi += 应用订阅修饰(content, 前缀映射[response.apiUrl], 筛选映射[response.apiUrl]) + '\n'; // 追加内容
 				} else if (isValidBase64(content)) {
 					//console.log('Base64订阅: ' + response.apiUrl);
-					newapi += 应用订阅前缀(base64Decode(content), 前缀映射[response.apiUrl]) + '\n'; // 解码并追加内容
+					newapi += 应用订阅修饰(base64Decode(content), 前缀映射[response.apiUrl], 筛选映射[response.apiUrl]) + '\n'; // 解码并追加内容
 				} else {
 					const 异常订阅LINK = `trojan://CMLiussss@127.0.0.1:8888?security=tls&allowInsecure=1&type=tcp&headerType=none#%E5%BC%82%E5%B8%B8%E8%AE%A2%E9%98%85%20${response.apiUrl.split('://')[1].split('/')[0]}`;
 					console.log('异常订阅: ' + 异常订阅LINK);
@@ -926,7 +1041,7 @@ async function KV(request, env, txt = 'ADD.txt', guest) {
 					---------------------------------------------------------------<br>
 					################################################################<br>
 					${FileName} 汇聚订阅编辑: 
-					<div style="color:#666;font-size:12px;margin:6px 0;">提示: 行首 <code>#</code> 表示注释；在任意行行首添加 <code>@前缀@</code> 可为该行节点名称批量添加前缀。单节点如 <code>@ppp@vless://xxx#香港</code> 会变为 <code>ppp香港</code>；订阅如 <code>@ppp@https://xxx</code> 则会为该订阅的每个节点名称都加上 <code>ppp</code> 前缀。</div>
+					<div style="color:#666;font-size:12px;margin:6px 0;">提示: 行首 <code>#</code> 表示注释；<code>@prefix(ppp)</code> 添加名称前缀，<code>@limit(5)</code> 保留前 5 个节点，<code>@rlimit(5)</code> 随机保留 5 个节点，<code>@rdedupe(ip)</code> 按 IP 去重并随机保留端口。修饰符之间、修饰符和链接之间可加空格，如 <code>@prefix(ppp) @rdedupe(ip) https://xxx</code>。</div>
 					<div class="editor-container">
 						${hasKV ? `
 						<textarea class="editor" 
@@ -1101,8 +1216,9 @@ async function KV(request, env, txt = 'ADD.txt', guest) {
  *   - configUrl：与 SUBCONFIG 相同的 .ini 规则配置
  *   - prefixMap：订阅链接 -> 名称前缀（为 Clash / Sing-box 直链订阅的节点补上前缀）
  *   - allPrefixes：所有前缀列表（插入国旗 emoji 时，确保前缀仍在名称最前）
+ *   - filterMap：订阅链接 -> 节点筛选规则列表
  */
-async function localSubconvert(target, nodeText, passthroughLinks, configUrl, userAgentHeader, prefixMap = {}, allPrefixes = []) {
+async function localSubconvert(target, nodeText, passthroughLinks, configUrl, userAgentHeader, prefixMap = {}, allPrefixes = [], filterMap = {}) {
 	const SUPPORTED_TARGETS = ['clash', 'singbox', 'surge', 'loon', 'quanx'];
 	if (!SUPPORTED_TARGETS.includes(target)) throw new Error(`本地转换器不支持的目标格式: ${target}`);
 
@@ -1133,8 +1249,10 @@ async function localSubconvert(target, nodeText, passthroughLinks, configUrl, us
 		if (!u) continue;
 		if (/^https?:\/\//i.test(u)) {
 			try {
-				const list = await fetchSubNodes(u, userAgentHeader);
+				let list = await fetchSubNodes(u, userAgentHeader);
 				const pfx = prefixMap[u];
+				const filters = filterMap[u];
+				list = 应用节点筛选列表(list, filters);
 				for (const p of list) {
 					if (pfx && p && p.name) p.name = pfx + p.name; // 为 Clash / Sing-box 订阅节点补上前缀
 					addProxy(p);
@@ -1153,7 +1271,7 @@ async function localSubconvert(target, nodeText, passthroughLinks, configUrl, us
 	// 2. 解析 .ini 配置
 	const config = await fetchIniConfig(configUrl);
 	// 3. 生成代理组
-	const proxyGroups = buildProxyGroups(config.customProxyGroups, proxies);
+		const proxyGroups = 清理代理组成员(buildProxyGroups(config.customProxyGroups, proxies), proxies);
 	// 4. 生成结构化规则
 	const rules = await buildRules(config.rulesets);
 	// 5. 按目标格式输出
@@ -1444,22 +1562,61 @@ async function fetchSubNodes(url, userAgentHeader) {
 	return [];
 }
 
-// 从 Clash 配置中提取流式（flow-style）代理项。块式（多行）代理不在 MVP 支持范围。
+// 从 Clash 配置中提取代理项，支持 flow-style 与常见块式（多行）写法
 function parseClashProxies(text) {
 	const proxies = [];
 	const lines = text.split(/\r?\n/);
 	let inProxies = false;
+	let current = null;
+	const pushCurrent = () => {
+		if (current && current.name && current.server) {
+			if (current.port !== undefined) current.port = Number(current.port);
+			proxies.push(current);
+		}
+		current = null;
+	};
+	const assignBlockPair = (target, body) => {
+		const m = body.match(/^([A-Za-z0-9_.-]+):\s*(.*)$/);
+		if (m) target[m[1]] = parseYamlValue(m[2]);
+	};
 	for (const raw of lines) {
 		if (/^proxies:\s*(\[\s*\])?\s*$/.test(raw)) { inProxies = true; continue; }
 		if (!inProxies) continue;
-		if (/^[^\s#-]/.test(raw) && raw.includes(':')) break; // 下一个顶层键，结束
-		const m = raw.match(/^\s*-\s*(\{.*\})\s*$/);
-		if (m) {
-			const obj = parseFlowMap(m[1]);
-			if (obj && obj.name && obj.server) { obj.port = Number(obj.port); proxies.push(obj); }
+		if (/^[^\s#-]/.test(raw) && raw.includes(':')) { pushCurrent(); break; } // 下一个顶层键，结束
+		if (!raw.trim() || /^\s*#/.test(raw)) continue;
+		const item = raw.match(/^\s*-\s*(.*)$/);
+		if (item) {
+			pushCurrent();
+			const body = item[1].trim();
+			if (body.startsWith('{')) {
+				const obj = parseFlowMap(body);
+				if (obj && obj.name && obj.server) {
+					if (obj.port !== undefined) obj.port = Number(obj.port);
+					proxies.push(obj);
+				}
+			} else {
+				current = {};
+				if (body) assignBlockPair(current, body);
+			}
+			continue;
+		}
+		if (current) {
+			const pair = raw.match(/^\s+([A-Za-z0-9_.-]+):\s*(.*)$/);
+			if (pair) current[pair[1]] = parseYamlValue(pair[2]);
 		}
 	}
+	pushCurrent();
 	return proxies;
+}
+
+function parseYamlValue(value) {
+	const raw = String(value || '').trim();
+	if (raw === '') return '';
+	try {
+		const parsed = parseFlowMap(`{v: ${raw}}`);
+		if (parsed && Object.prototype.hasOwnProperty.call(parsed, 'v')) return parsed.v;
+	} catch (e) {}
+	return raw.replace(/^["']|["']$/g, '');
 }
 
 // 宽松的 YAML/JSON flow 映射解析器：{k: v, k2: {..}, k3: [a, b]}
