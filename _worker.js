@@ -346,14 +346,14 @@ function 解析行标记(line) {
 
 		const prefixMatch = rest.match(/^@prefix\(\s*([^)]*)\s*\)\s*/i);
 		if (prefixMatch) {
-			result.prefix += prefixMatch[1].trim();
+			result.prefix += prefixMatch[1];
 			rest = rest.slice(prefixMatch[0].length).trim();
 			continue;
 		}
 
 		const tailMatch = rest.match(/^@tail\(\s*([^)]*)\s*\)\s*/i);
 		if (tailMatch) {
-			result.tail += tailMatch[1].trim();
+			result.tail += tailMatch[1];
 			rest = rest.slice(tailMatch[0].length).trim();
 			continue;
 		}
