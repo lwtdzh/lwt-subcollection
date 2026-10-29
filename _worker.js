@@ -156,14 +156,16 @@ export default {
 			else if (url.searchParams.has('surge')) 追加UA = 'surge';
 			else if (url.searchParams.has('quanx')) 追加UA = 'Quantumult%20X';
 			else if (url.searchParams.has('loon')) 追加UA = 'Loon';
+			const 有订阅修饰符 = Object.keys(订阅前缀映射).length > 0 || Object.keys(订阅后缀映射).length > 0 || Object.keys(订阅IPv6标记映射).length > 0 || Object.keys(订阅筛选映射).length > 0;
+			const 使用本地转换器 = useLocalConverter || (订阅格式 == 'clash' && 有订阅修饰符);
 
 			const 订阅链接数组 = [...new Set(urls)].filter(item => item?.trim?.()); // 去重
 			if (订阅链接数组.length > 0) {
-				const 请求订阅响应内容 = await getSUB(订阅链接数组, request, 追加UA, userAgentHeader, 订阅前缀映射, 订阅后缀映射, 订阅IPv6标记映射, 订阅筛选映射);
+				const 请求订阅响应内容 = await getSUB(订阅链接数组, request, 追加UA, userAgentHeader, 订阅前缀映射, 订阅后缀映射, 订阅IPv6标记映射, 订阅筛选映射, 使用本地转换器);
 				console.log(请求订阅响应内容);
 				req_data += 请求订阅响应内容[0].join('\n');
 				订阅转换URL += "|" + 请求订阅响应内容[1];
-				if (订阅格式 == 'base64' && !isSubConverterRequest && !useLocalConverter && 请求订阅响应内容[1].includes('://')) {
+				if (订阅格式 == 'base64' && !isSubConverterRequest && !使用本地转换器 && 请求订阅响应内容[1].includes('://')) {
 					subConverterUrl = `${subProtocol}://${subConverter}/sub?target=mixed&url=${encodeURIComponent(请求订阅响应内容[1])}&insert=false&config=${encodeURIComponent(subConfig)}&emoji=true&list=false&tfo=false&scv=true&fdn=false&sort=false&new_name=true`;
 					try {
 						const subConverterResponse = await fetch(subConverterUrl, { headers: { 'User-Agent': 'v2rayN/CF-Workers-SUB  (https://github.com/cmliu/CF-Workers-SUB)' } });
@@ -230,7 +232,7 @@ export default {
 			}
 
 			// 未设置 SUBAPI：使用内置本地订阅转换器（支持 clash / singbox / surge / quanx / loon）
-			if (useLocalConverter) {
+			if (使用本地转换器) {
 				const 本地支持格式 = ['clash', 'singbox', 'surge', 'quanx', 'loon'];
 				if (!本地支持格式.includes(订阅格式)) {
 					return new Response(`本地订阅转换器暂不支持 ${订阅格式} 格式。\n如需该格式，请在 Cloudflare Pages 环境变量中设置 SUBAPI 指向远程订阅转换后端。`, { status: 400, headers: { "Content-Type": "text/plain;charset=utf-8" } });
@@ -380,8 +382,16 @@ function 解析行标记(line) {
 		break;
 	}
 
-	result.link = rest;
+	result.link = 清理链接包裹符(rest);
 	return result;
+}
+
+function 清理链接包裹符(link) {
+	const trimmed = (link || '').trim();
+	if (trimmed.length >= 2 && trimmed.startsWith('`') && trimmed.endsWith('`')) {
+		return trimmed.slice(1, -1).trim();
+	}
+	return trimmed;
 }
 
 function 拼接节点名称(name, prefix = '', tail = '', showIPv6 = false, isIPv6 = false) {
@@ -785,7 +795,7 @@ async function proxyURL(proxyURL, url) {
 	return newResponse;
 }
 
-async function getSUB(api, request, 追加UA, userAgentHeader, 前缀映射 = {}, 后缀映射 = {}, IPv6标记映射 = {}, 筛选映射 = {}) {
+async function getSUB(api, request, 追加UA, userAgentHeader, 前缀映射 = {}, 后缀映射 = {}, IPv6标记映射 = {}, 筛选映射 = {}, 本地转换模式 = useLocalConverter) {
 	if (!api || api.length === 0) {
 		return [];
 	} else api = [...new Set(api)]; // 去重
@@ -839,7 +849,7 @@ async function getSUB(api, request, 追加UA, userAgentHeader, 前缀映射 = {}
 					const 后缀 = 后缀映射[response.apiUrl];
 					const 显示IPv6 = IPv6标记映射[response.apiUrl];
 					const 筛选列表 = 筛选映射[response.apiUrl];
-					const 明文节点 = ((前缀 || 后缀 || 显示IPv6 || 筛选列表) && !useLocalConverter) ? await 订阅转明文节点(response.apiUrl, userAgentHeader) : null;
+					const 明文节点 = ((前缀 || 后缀 || 显示IPv6 || 筛选列表) && !本地转换模式) ? await 订阅转明文节点(response.apiUrl, userAgentHeader) : null;
 					if (明文节点) {
 						newapi += 应用订阅修饰(明文节点, 前缀, 后缀, 显示IPv6, 筛选列表) + '\n'; // Clash 配置转明文后添加行首修饰符
 					} else {
@@ -851,7 +861,7 @@ async function getSUB(api, request, 追加UA, userAgentHeader, 前缀映射 = {}
 					const 后缀 = 后缀映射[response.apiUrl];
 					const 显示IPv6 = IPv6标记映射[response.apiUrl];
 					const 筛选列表 = 筛选映射[response.apiUrl];
-					const 明文节点 = ((前缀 || 后缀 || 显示IPv6 || 筛选列表) && !useLocalConverter) ? await 订阅转明文节点(response.apiUrl, userAgentHeader) : null;
+					const 明文节点 = ((前缀 || 后缀 || 显示IPv6 || 筛选列表) && !本地转换模式) ? await 订阅转明文节点(response.apiUrl, userAgentHeader) : null;
 					if (明文节点) {
 						newapi += 应用订阅修饰(明文节点, 前缀, 后缀, 显示IPv6, 筛选列表) + '\n'; // Singbox 配置转明文后添加行首修饰符
 					} else {
