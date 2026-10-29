@@ -1623,11 +1623,9 @@ function buildProxyGroups(defs, proxies) {
 		let finalMembers = resolved.filter(n => { if (seen.has(n)) return false; seen.add(n); return true; });
 		if (finalMembers.length === 0) finalMembers = ['DIRECT']; // 避免空组导致配置无效
 		const group = { name, type, proxies: finalMembers };
-		if (type === 'url-test' || type === 'load-balance' || type === 'fallback') {
-			group.url = url || DEFAULT_LATENCY_TEST_URL;
-			group.interval = interval || 300;
-			if (tolerance != null) group.tolerance = tolerance;
-		}
+		group.url = url || DEFAULT_LATENCY_TEST_URL;
+		group.interval = interval || 300;
+		if (tolerance != null) group.tolerance = tolerance;
 		groups.push(group);
 	}
 	return groups;
@@ -2160,6 +2158,3 @@ function quanxFilterString(r) {
 	if (!t) return null;
 	return `${t}, ${r.v}, ${r.group}` + (r.noResolve ? ', no-resolve' : '');
 }
-
-
-
