@@ -95,18 +95,22 @@ export default {
 			let 自建节点 = "";
 			let 订阅链接 = "";
 			let 订阅前缀映射 = {};	// 订阅链接 -> 名称前缀
+			let 订阅后缀映射 = {};	// 订阅链接 -> 名称后缀
+			let 订阅IPv6标记映射 = {};	// 订阅链接 -> 是否在 IPv6 节点名末尾追加 [IPv6]
 			let 订阅筛选映射 = {};	// 订阅链接 -> [{ type, ... }]
 			let 所有前缀 = [];	// 所有出现过的前缀（本地转换放置国旗 emoji 时用：前缀在最前，emoji 紧随其后）
 			for (let x of 重新汇总所有链接) {
-				const { link, prefix, filters } = 解析行标记(x);
+				const { link, prefix, tail, showIPv6, filters } = 解析行标记(x);
 				if (!link) continue;
 				if (prefix) 所有前缀.push(prefix);
 				if (link.toLowerCase().startsWith('http')) {
 					订阅链接 += link + '\n';
 					if (prefix) 订阅前缀映射[link] = prefix;
+					if (tail) 订阅后缀映射[link] = tail;
+					if (showIPv6) 订阅IPv6标记映射[link] = true;
 					if (filters.length) 订阅筛选映射[link] = filters;
 				} else {
-					自建节点 += 添加节点名称前缀(link, prefix) + '\n';
+					自建节点 += 添加节点名称修饰(link, prefix, tail, showIPv6) + '\n';
 				}
 			}
 			MainData = 自建节点;
@@ -155,7 +159,7 @@ export default {
 
 			const 订阅链接数组 = [...new Set(urls)].filter(item => item?.trim?.()); // 去重
 			if (订阅链接数组.length > 0) {
-				const 请求订阅响应内容 = await getSUB(订阅链接数组, request, 追加UA, userAgentHeader, 订阅前缀映射, 订阅筛选映射);
+				const 请求订阅响应内容 = await getSUB(订阅链接数组, request, 追加UA, userAgentHeader, 订阅前缀映射, 订阅后缀映射, 订阅IPv6标记映射, 订阅筛选映射);
 				console.log(请求订阅响应内容);
 				req_data += 请求订阅响应内容[0].join('\n');
 				订阅转换URL += "|" + 请求订阅响应内容[1];
@@ -234,7 +238,7 @@ export default {
 				try {
 					// 订阅转换URL 形如 "<自身token链接>|<直链1>|<直链2>..."，去掉首个自身链接后即为需要额外抓取的订阅/节点直链
 					const passthroughLinks = 订阅转换URL.split('|').slice(1).filter(item => item && item.trim());
-					let localContent = await localSubconvert(订阅格式, result, passthroughLinks, subConfig, userAgentHeader, 订阅前缀映射, 所有前缀, 订阅筛选映射);
+					let localContent = await localSubconvert(订阅格式, result, passthroughLinks, subConfig, userAgentHeader, 订阅前缀映射, 订阅后缀映射, 订阅IPv6标记映射, 所有前缀, 订阅筛选映射);
 					if (订阅格式 == 'clash') localContent = await clashFix(localContent);
 					if (!userAgent.includes('mozilla')) responseHeaders["Content-Disposition"] = `attachment; filename*=utf-8''${encodeURIComponent(FileName)}`;
 					return new Response(localContent, { headers: responseHeaders });
@@ -316,12 +320,14 @@ async function ADD(envadd) {
 
 // 解析行首修饰符；行首 # 永远表示注释
 // 例如: "@prefix(ppp) vless://xxx#香港" -> { prefix: "ppp", link: "vless://xxx#香港" }
+//      "@tail(备用) vless://xxx#香港" -> { tail: "备用", link: "vless://xxx#香港" }
+//      "@showipv6(y) vless://xxx@[2606:4700::1]:443#IPv6节点" -> 节点名末尾追加 [IPv6]
 //      "@limit(5) https://sub.example.com" -> { filters: [{ type: "limit", count: 5, random: false }], link: "https://sub.example.com" }
 //      "@rdedupe(ip) https://sub.example.com" -> 按 server/IP 分组，每组随机保留 1 个节点
-//      "@prefix(ppp) @rlimit(5) https://sub.example.com" -> 名称加 ppp 前缀，并随机保留 5 个节点
+//      "@prefix(ppp) @tail(备用) @showipv6(y) @rlimit(5) https://sub.example.com" -> 名称加 ppp 前缀和备用后缀，IPv6 节点末尾追加 [IPv6]，并随机保留 5 个节点
 function 解析行标记(line) {
 	let rest = (line || '').trim();
-	const result = { link: '', prefix: '', filters: [] };
+	const result = { link: '', prefix: '', tail: '', showIPv6: false, filters: [] };
 	if (!rest || rest.startsWith('#')) return result;
 
 	for (let i = 0; i < 10; i++) {
@@ -343,6 +349,20 @@ function 解析行标记(line) {
 			continue;
 		}
 
+		const tailMatch = rest.match(/^@tail\(\s*([^)]*)\s*\)\s*/i);
+		if (tailMatch) {
+			result.tail += tailMatch[1].trim();
+			rest = rest.slice(tailMatch[0].length).trim();
+			continue;
+		}
+
+		const showIPv6Match = rest.match(/^@showipv6\(\s*([^)]+?)\s*\)\s*/i);
+		if (showIPv6Match) {
+			result.showIPv6 = /^(y|yes|true|1|on)$/i.test(showIPv6Match[1].trim());
+			rest = rest.slice(showIPv6Match[0].length).trim();
+			continue;
+		}
+
 		const dedupeMatch = rest.match(/^@(r?dedupe)\(\s*([a-z0-9_-]+)(?:\s*,\s*(random|first))?\s*\)\s*/i);
 		if (dedupeMatch) {
 			result.filters.push({
@@ -355,12 +375,7 @@ function 解析行标记(line) {
 		}
 
 		if (rest.startsWith('@')) {
-			const end = rest.indexOf('@', 1);
-			if (end !== -1) {
-				result.prefix += rest.slice(1, end);
-				rest = rest.slice(end + 1).trim();
-				continue;
-			}
+			return result;
 		}
 		break;
 	}
@@ -369,37 +384,53 @@ function 解析行标记(line) {
 	return result;
 }
 
-// 给单个节点链接的名称添加前缀，例如名称 abc 加前缀 ppp 后为 pppabc
-function 添加节点名称前缀(nodeLink, prefix) {
-	if (!prefix) return nodeLink;
+function 拼接节点名称(name, prefix = '', tail = '', showIPv6 = false, isIPv6 = false) {
+	const nextName = (prefix || '') + (name || '') + (tail || '');
+	if (!showIPv6 || !isIPv6 || /\[IPv6\]$/i.test(nextName)) return nextName;
+	return nextName + '[IPv6]';
+}
+
+// 给单个节点链接的名称添加前缀 / 后缀，例如 abc 加前缀 ppp、后缀 bak 后为 pppabcbak
+function 添加节点名称修饰(nodeLink, prefix = '', tail = '', showIPv6 = false) {
+	if (!prefix && !tail && !showIPv6) return nodeLink;
 	const link = (nodeLink || '').trim();
 	if (!link) return link;
 	// vmess 节点名称保存在 base64 编码的 JSON 的 ps 字段中
 	if (link.toLowerCase().startsWith('vmess://')) {
 		try {
 			const config = JSON.parse(base64Decode(link.slice('vmess://'.length)));
-			config.ps = prefix + (config.ps || '');
+			config.ps = 拼接节点名称(config.ps || '', prefix, tail, showIPv6, 是否IPv6Server(config.add));
 			return 'vmess://' + btoa(unescape(encodeURIComponent(JSON.stringify(config))));
 		} catch (e) {
 			return link;
 		}
 	}
+	const isIPv6 = 是否节点链接IPv6(link);
 	// 其余节点（vless/trojan/ss 等）名称位于 # 片段
 	const hashIndex = link.indexOf('#');
 	if (hashIndex === -1) {
-		// 该节点没有名称，直接以前缀作为名称
-		return link + '#' + prefix;
+		// 该节点没有名称，直接以前缀 + 后缀作为名称
+		return link + '#' + 拼接节点名称('', prefix, tail, showIPv6, isIPv6);
 	}
-	return link.slice(0, hashIndex + 1) + prefix + link.slice(hashIndex + 1);
+	return link.slice(0, hashIndex + 1) + 拼接节点名称(link.slice(hashIndex + 1), prefix, tail, showIPv6, isIPv6);
 }
 
-// 给订阅内容中的每个节点名称添加前缀
-function 应用订阅前缀(content, prefix) {
-	if (!prefix || !content) return content;
+// 给订阅内容中的每个节点名称添加前缀 / 后缀
+function 应用订阅名称修饰(content, prefix, tail, showIPv6) {
+	if ((!prefix && !tail && !showIPv6) || !content) return content;
 	return content.split('\n').map(line => {
-		if (line.includes('://')) return 添加节点名称前缀(line.trim(), prefix);
+		if (line.includes('://')) return 添加节点名称修饰(line.trim(), prefix, tail, showIPv6);
 		return line;
 	}).join('\n');
+}
+
+function 是否节点链接IPv6(link) {
+	const proxy = parseNodeURI(link);
+	return proxy ? 是否IPv6Server(proxy.server) : false;
+}
+
+function 是否IPv6Server(server) {
+	return 标准化去重地址(server).includes(':');
 }
 
 // 对订阅里的节点数量做限制；random=false 保留前 N 个，random=true 随机保留 N 个并维持原有相对顺序
@@ -463,8 +494,8 @@ function 应用订阅筛选(content, filters) {
 	return 应用节点筛选列表(nodes, filters).map(item => item.line).join('\n');
 }
 
-function 应用订阅修饰(content, prefix, filters) {
-	return 应用订阅前缀(应用订阅筛选(content, filters), prefix);
+function 应用订阅修饰(content, prefix, tail, showIPv6, filters) {
+	return 应用订阅名称修饰(应用订阅筛选(content, filters), prefix, tail, showIPv6);
 }
 
 function 清理代理组成员(proxyGroups, proxies) {
@@ -754,7 +785,7 @@ async function proxyURL(proxyURL, url) {
 	return newResponse;
 }
 
-async function getSUB(api, request, 追加UA, userAgentHeader, 前缀映射 = {}, 筛选映射 = {}) {
+async function getSUB(api, request, 追加UA, userAgentHeader, 前缀映射 = {}, 后缀映射 = {}, IPv6标记映射 = {}, 筛选映射 = {}) {
 	if (!api || api.length === 0) {
 		return [];
 	} else api = [...new Set(api)]; // 去重
@@ -805,29 +836,33 @@ async function getSUB(api, request, 追加UA, userAgentHeader, 前缀映射 = {}
 				if (content.includes('proxies:')) {
 					//console.log('Clash订阅: ' + response.apiUrl);
 					const 前缀 = 前缀映射[response.apiUrl];
+					const 后缀 = 后缀映射[response.apiUrl];
+					const 显示IPv6 = IPv6标记映射[response.apiUrl];
 					const 筛选列表 = 筛选映射[response.apiUrl];
-					const 明文节点 = ((前缀 || 筛选列表) && !useLocalConverter) ? await 订阅转明文节点(response.apiUrl, userAgentHeader) : null;
+					const 明文节点 = ((前缀 || 后缀 || 显示IPv6 || 筛选列表) && !useLocalConverter) ? await 订阅转明文节点(response.apiUrl, userAgentHeader) : null;
 					if (明文节点) {
-						newapi += 应用订阅修饰(明文节点, 前缀, 筛选列表) + '\n'; // Clash 配置转明文后添加行首修饰符
+						newapi += 应用订阅修饰(明文节点, 前缀, 后缀, 显示IPv6, 筛选列表) + '\n'; // Clash 配置转明文后添加行首修饰符
 					} else {
 						订阅转换URLs += "|" + response.apiUrl; // Clash 配置
 					}
 				} else if (content.includes('outbounds"') && content.includes('inbounds"')) {
 					//console.log('Singbox订阅: ' + response.apiUrl);
 					const 前缀 = 前缀映射[response.apiUrl];
+					const 后缀 = 后缀映射[response.apiUrl];
+					const 显示IPv6 = IPv6标记映射[response.apiUrl];
 					const 筛选列表 = 筛选映射[response.apiUrl];
-					const 明文节点 = ((前缀 || 筛选列表) && !useLocalConverter) ? await 订阅转明文节点(response.apiUrl, userAgentHeader) : null;
+					const 明文节点 = ((前缀 || 后缀 || 显示IPv6 || 筛选列表) && !useLocalConverter) ? await 订阅转明文节点(response.apiUrl, userAgentHeader) : null;
 					if (明文节点) {
-						newapi += 应用订阅修饰(明文节点, 前缀, 筛选列表) + '\n'; // Singbox 配置转明文后添加行首修饰符
+						newapi += 应用订阅修饰(明文节点, 前缀, 后缀, 显示IPv6, 筛选列表) + '\n'; // Singbox 配置转明文后添加行首修饰符
 					} else {
 						订阅转换URLs += "|" + response.apiUrl; // Singbox 配置
 					}
 				} else if (content.includes('://')) {
 					//console.log('明文订阅: ' + response.apiUrl);
-					newapi += 应用订阅修饰(content, 前缀映射[response.apiUrl], 筛选映射[response.apiUrl]) + '\n'; // 追加内容
+					newapi += 应用订阅修饰(content, 前缀映射[response.apiUrl], 后缀映射[response.apiUrl], IPv6标记映射[response.apiUrl], 筛选映射[response.apiUrl]) + '\n'; // 追加内容
 				} else if (isValidBase64(content)) {
 					//console.log('Base64订阅: ' + response.apiUrl);
-					newapi += 应用订阅修饰(base64Decode(content), 前缀映射[response.apiUrl], 筛选映射[response.apiUrl]) + '\n'; // 解码并追加内容
+					newapi += 应用订阅修饰(base64Decode(content), 前缀映射[response.apiUrl], 后缀映射[response.apiUrl], IPv6标记映射[response.apiUrl], 筛选映射[response.apiUrl]) + '\n'; // 解码并追加内容
 				} else {
 					const 异常订阅LINK = `trojan://CMLiussss@127.0.0.1:8888?security=tls&allowInsecure=1&type=tcp&headerType=none#%E5%BC%82%E5%B8%B8%E8%AE%A2%E9%98%85%20${response.apiUrl.split('://')[1].split('/')[0]}`;
 					console.log('异常订阅: ' + 异常订阅LINK);
@@ -846,8 +881,8 @@ async function getSUB(api, request, 追加UA, userAgentHeader, 前缀映射 = {}
 	return [订阅内容, 订阅转换URLs];
 }
 
-// 通过订阅转换后端将 Clash/Sing-box 订阅转为明文节点，以便统一添加名称前缀
-// 转换失败时返回 null，调用方会回退到直接交由转换后端抓取（不加前缀）
+// 通过订阅转换后端将 Clash/Sing-box 订阅转为明文节点，以便统一添加名称修饰符
+// 转换失败时返回 null，调用方会回退到直接交由转换后端抓取（不处理修饰符）
 async function 订阅转明文节点(subUrl, userAgentHeader) {
 	try {
 		const convertUrl = `${subProtocol}://${subConverter}/sub?target=mixed&url=${encodeURIComponent(subUrl)}&insert=false&config=${encodeURIComponent(subConfig)}&emoji=true&list=false&tfo=false&scv=true&fdn=false&sort=false&new_name=true`;
@@ -1041,7 +1076,7 @@ async function KV(request, env, txt = 'ADD.txt', guest) {
 					---------------------------------------------------------------<br>
 					################################################################<br>
 					${FileName} 汇聚订阅编辑: 
-					<div style="color:#666;font-size:12px;margin:6px 0;">提示: 行首 <code>#</code> 表示注释；<code>@prefix(ppp)</code> 添加名称前缀，<code>@limit(5)</code> 保留前 5 个节点，<code>@rlimit(5)</code> 随机保留 5 个节点，<code>@rdedupe(ip)</code> 按 IP 去重并随机保留端口。修饰符之间、修饰符和链接之间可加空格，如 <code>@prefix(ppp) @rdedupe(ip) https://xxx</code>。</div>
+					<div style="color:#666;font-size:12px;margin:6px 0;">提示: 行首 <code>#</code> 表示注释；所有修饰符都使用 <code>@name(...)</code>。<code>@prefix(ppp)</code> 添加名称前缀，<code>@tail(-bak)</code> 添加名称后缀，<code>@showipv6(y)</code> 为 IPv6 节点名末尾追加 <code>[IPv6]</code>，<code>@limit(5)</code> 保留前 5 个节点，<code>@rlimit(5)</code> 随机保留 5 个节点，<code>@rdedupe(ip)</code> 按 IP 去重并随机保留端口。示例: <code>@prefix(ppp) @tail(-bak) @showipv6(y) @rdedupe(ip) https://xxx</code>。</div>
 					<div class="editor-container">
 						${hasKV ? `
 						<textarea class="editor" 
@@ -1215,10 +1250,12 @@ async function KV(request, env, txt = 'ADD.txt', guest) {
  *   - passthroughLinks：需额外抓取的订阅 / 节点直链（Clash / Sing-box / base64 / 明文）
  *   - configUrl：与 SUBCONFIG 相同的 .ini 规则配置
  *   - prefixMap：订阅链接 -> 名称前缀（为 Clash / Sing-box 直链订阅的节点补上前缀）
+ *   - tailMap：订阅链接 -> 名称后缀
+ *   - showIPv6Map：订阅链接 -> 是否在 IPv6 节点名末尾追加 [IPv6]
  *   - allPrefixes：所有前缀列表（插入国旗 emoji 时，确保前缀仍在名称最前）
  *   - filterMap：订阅链接 -> 节点筛选规则列表
  */
-async function localSubconvert(target, nodeText, passthroughLinks, configUrl, userAgentHeader, prefixMap = {}, allPrefixes = [], filterMap = {}) {
+async function localSubconvert(target, nodeText, passthroughLinks, configUrl, userAgentHeader, prefixMap = {}, tailMap = {}, showIPv6Map = {}, allPrefixes = [], filterMap = {}) {
 	const SUPPORTED_TARGETS = ['clash', 'singbox', 'surge', 'loon', 'quanx'];
 	if (!SUPPORTED_TARGETS.includes(target)) throw new Error(`本地转换器不支持的目标格式: ${target}`);
 
@@ -1251,10 +1288,12 @@ async function localSubconvert(target, nodeText, passthroughLinks, configUrl, us
 			try {
 				let list = await fetchSubNodes(u, userAgentHeader);
 				const pfx = prefixMap[u];
+				const tail = tailMap[u];
+				const showIPv6 = showIPv6Map[u];
 				const filters = filterMap[u];
 				list = 应用节点筛选列表(list, filters);
 				for (const p of list) {
-					if (pfx && p && p.name) p.name = pfx + p.name; // 为 Clash / Sing-box 订阅节点补上前缀
+					if ((pfx || tail || showIPv6) && p && p.name) p.name = 拼接节点名称(p.name, pfx, tail, showIPv6, 是否IPv6Server(p.server)); // 为 Clash / Sing-box 订阅节点补上名称修饰
 					addProxy(p);
 				}
 			} catch (e) {

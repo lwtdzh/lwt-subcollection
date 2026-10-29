@@ -21,14 +21,16 @@
 - 注释行：`# @prefix(ppp) https://xxx` → 整行忽略。
 - 单节点行：`@prefix(ppp) vless://xxx#香港` → 节点名称变为 `ppp香港`（vless/trojan/ss/vmess 等均支持）。
 - 订阅行：`@prefix(ppp) https://xxx` → 该订阅内**每个**节点名称都会加上 `ppp` 前缀。
+- 名称后缀：`@tail(-bak) https://xxx` → 该订阅内**每个**节点名称都会加上 `-bak` 后缀。
+- IPv6 标记：`@showipv6(y) https://xxx` → 若节点 `server` 是 IPv6，节点名称末尾会追加 `[IPv6]`。
 - 顺序限制：`@limit(5) https://xxx` → 该订阅只保留前 5 个节点。
 - 随机限制：`@rlimit(5) https://xxx` → 该订阅每次随机保留 5 个节点。
 - IP 去重：`@rdedupe(ip) https://xxx` → 按节点 `server` 去重，每个 IP 随机保留一个端口。
-- 组合使用：`@prefix(ppp) @rdedupe(ip) @limit(5) https://xxx` → 该订阅先按 IP 随机去重，再保留前 5 个节点，并给节点名称加上 `ppp` 前缀。
+- 组合使用：`@prefix(ppp) @tail(-bak) @showipv6(y) @rdedupe(ip) @limit(5) https://xxx` → 该订阅先按 IP 随机去重，再保留前 5 个节点，并给节点名称加上 `ppp` 前缀、`-bak` 后缀和 IPv6 标记。
 
 说明：
-- `@prefix(x)`、`@limit(x)`、`@rlimit(x)`、`@rdedupe(ip)` 支持有空格和无空格写法，如 `@prefix(ppp)@rdedupe(ip)https://xxx`。
-- 旧的 `@前缀@` 仍可使用；节点自身的 `#名称` 片段会保留。
+- 所有行首修饰符都必须使用括号；`@prefix(x)`、`@tail(x)`、`@showipv6(y)`、`@limit(x)`、`@rlimit(x)`、`@rdedupe(ip)` 支持有空格和无空格写法，如 `@prefix(ppp)@tail(-bak)@showipv6(y)@rdedupe(ip)https://xxx`。
+- 节点自身的 `#名称` 片段会保留。
 - `@dedupe(ip)` 保留每个 IP 下的第一个节点；`@rdedupe(ip)` 随机保留。Clash 输出会同步清理 `proxy-groups` 中已删除的节点名。
 - `@limit(x)` / `@rlimit(x)` 只对订阅行生效，`x` 为节点数量；多个筛选修饰符按书写顺序依次执行。
 - 明文/Base64 订阅会直接应用修饰符；返回 Clash/Sing-box 配置的订阅会先转为明文节点再统一处理（若转换失败则回退为不处理该订阅的修饰符）。
