@@ -30,6 +30,8 @@
 
 说明：
 - 所有行首修饰符都必须使用括号；`@prefix(x)`、`@tail(x)`、`@showipv6(y)`、`@limit(x)`、`@rlimit(x)`、`@rdedupe(ip)` 支持有空格和无空格写法，如 `@prefix(ppp)@tail(-bak)@showipv6(y)@rdedupe(ip)https://xxx`。
+- 本地转换时，国旗放在整个节点名称最前，已有国旗也会移到最前。地区识别优先使用节点原名，再检查 `prefix`、`tail`，最后检查完整名称。例如原名为 `MASQUE·5` 时，`@prefix(中国大陆CN-)` 输出 `🇨🇳 中国大陆CN-MASQUE·5`，`@tail(China)` 输出 `🇨🇳 MASQUE·5China`。
+- 同一段名称中的港澳台关键词优先于“中国”：`中国香港`、`中国澳门`、`中国台湾` 分别识别为 `🇭🇰`、`🇲🇴`、`🇹🇼`，简体和繁体写法均支持。
 - 节点自身的 `#名称` 片段会保留。
 - `@dedupe(ip)` 保留每个 IP 下的第一个节点；`@rdedupe(ip)` 随机保留。Clash 输出会同步清理 `proxy-groups` 中已删除的节点名。
 - `@limit(x)` / `@rlimit(x)` 只对订阅行生效，`x` 为节点数量；多个筛选修饰符按书写顺序依次执行。

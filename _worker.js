@@ -98,11 +98,13 @@ export default {
 			let 订阅后缀映射 = {};	// 订阅链接 -> 名称后缀
 			let 订阅IPv6标记映射 = {};	// 订阅链接 -> 是否在 IPv6 节点名末尾追加 [IPv6]
 			let 订阅筛选映射 = {};	// 订阅链接 -> [{ type, ... }]
-			let 所有前缀 = [];	// 所有出现过的前缀（本地转换放置国旗 emoji 时用：前缀在最前，emoji 紧随其后）
+			let 所有前缀 = [];	// 所有出现过的前缀（本地转换识别国旗时用）
+			let 所有后缀 = [];	// 所有出现过的后缀（本地转换识别国旗时用）
 			for (let x of 重新汇总所有链接) {
 				const { link, prefix, tail, showIPv6, filters } = 解析行标记(x);
 				if (!link) continue;
 				if (prefix) 所有前缀.push(prefix);
+				if (tail) 所有后缀.push(tail);
 				if (link.toLowerCase().startsWith('http')) {
 					订阅链接 += link + '\n';
 					if (prefix) 订阅前缀映射[link] = prefix;
@@ -240,7 +242,7 @@ export default {
 				try {
 					// 订阅转换URL 形如 "<自身token链接>|<直链1>|<直链2>..."，去掉首个自身链接后即为需要额外抓取的订阅/节点直链
 					const passthroughLinks = 订阅转换URL.split('|').slice(1).filter(item => item && item.trim());
-					let localContent = await localSubconvert(订阅格式, result, passthroughLinks, subConfig, userAgentHeader, 订阅前缀映射, 订阅后缀映射, 订阅IPv6标记映射, 所有前缀, 订阅筛选映射);
+					let localContent = await localSubconvert(订阅格式, result, passthroughLinks, subConfig, userAgentHeader, 订阅前缀映射, 订阅后缀映射, 订阅IPv6标记映射, 所有前缀, 订阅筛选映射, 所有后缀);
 					if (订阅格式 == 'clash') localContent = await clashFix(localContent);
 					if (!userAgent.includes('mozilla')) responseHeaders["Content-Disposition"] = `attachment; filename*=utf-8''${encodeURIComponent(FileName)}`;
 					return new Response(localContent, { headers: responseHeaders });
@@ -1262,20 +1264,21 @@ async function KV(request, env, txt = 'ADD.txt', guest) {
  *   - prefixMap：订阅链接 -> 名称前缀（为 Clash / Sing-box 直链订阅的节点补上前缀）
  *   - tailMap：订阅链接 -> 名称后缀
  *   - showIPv6Map：订阅链接 -> 是否在 IPv6 节点名末尾追加 [IPv6]
- *   - allPrefixes：所有前缀列表（插入国旗 emoji 时，确保前缀仍在名称最前）
+ *   - allPrefixes：所有前缀列表（国旗识别时，单独检查前缀中的地区）
  *   - filterMap：订阅链接 -> 节点筛选规则列表
+ *   - allTails：所有后缀列表（国旗识别时，单独检查后缀中的地区）
  */
-async function localSubconvert(target, nodeText, passthroughLinks, configUrl, userAgentHeader, prefixMap = {}, tailMap = {}, showIPv6Map = {}, allPrefixes = [], filterMap = {}) {
+async function localSubconvert(target, nodeText, passthroughLinks, configUrl, userAgentHeader, prefixMap = {}, tailMap = {}, showIPv6Map = {}, allPrefixes = [], filterMap = {}, allTails = []) {
 	const SUPPORTED_TARGETS = ['clash', 'singbox', 'surge', 'loon', 'quanx'];
 	if (!SUPPORTED_TARGETS.includes(target)) throw new Error(`本地转换器不支持的目标格式: ${target}`);
 
 	// 1. 收集节点
 	const proxies = [];
 	const usedNames = new Set();
-	const addProxy = (p) => {
+	const addProxy = (p, prefixes = allPrefixes, tails = allTails) => {
 		if (!p || !p.name || !p.server || !p.port) return;
 		let name = String(p.name).trim() || `${p.type}-${p.server}`;
-		name = insertFlagEmoji(name, allPrefixes); // 补上国旗 emoji（前缀之后）
+		name = insertFlagEmoji(name, prefixes, tails); // 国旗 emoji 放在整个名称最前
 		let unique = name;
 		let i = 1;
 		while (usedNames.has(unique)) unique = `${name} ${++i}`;
@@ -1304,7 +1307,7 @@ async function localSubconvert(target, nodeText, passthroughLinks, configUrl, us
 				list = 应用节点筛选列表(list, filters);
 				for (const p of list) {
 					if ((pfx || tail || showIPv6) && p && p.name) p.name = 拼接节点名称(p.name, pfx, tail, showIPv6, 是否IPv6Server(p.server)); // 为 Clash / Sing-box 订阅节点补上名称修饰
-					addProxy(p);
+					addProxy(p, [pfx], [tail]);
 				}
 			} catch (e) {
 				console.log('本地转换：抓取订阅失败 ' + u);
@@ -1955,20 +1958,30 @@ function toFlow(value) {
 function flowKey(k) { return /^[A-Za-z0-9_.-]+$/.test(k) ? k : quoteYaml(k); }
 function quoteYaml(s) { return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'; }
 
-// 国旗 emoji 插入（对齐远程后端 emoji=true 行为，仅用于本地 Clash 输出）：
-// - 若名称已含国旗 emoji，不重复添加；
-// - 若名称以某个前缀开头，则将 emoji 插入到前缀之后，保证前缀仍在最前。
-function insertFlagEmoji(name, allPrefixes) {
+// 本地转换的国旗 emoji 放在整个名称最前，已有国旗也移到最前，不重复添加。
+// 优先识别节点原名，再检查 prefix、tail，最后检查完整名称。
+function insertFlagEmoji(name, allPrefixes = [], allTails = []) {
 	if (!name) return name;
-	if (/[\u{1F1E6}-\u{1F1FF}]{2}/u.test(name)) return name; // 已有国旗
-	let matched = '';
-	for (const pfx of (allPrefixes || [])) {
-		if (pfx && name.startsWith(pfx) && pfx.length > matched.length) matched = pfx;
+	const existingFlag = name.match(/[\u{1F1E6}-\u{1F1FF}]{2}/u);
+	if (existingFlag) {
+		if (existingFlag.index === 0) return name;
+		return existingFlag[0] + ' ' + name.replace(/[\u{1F1E6}-\u{1F1FF}]{2}\s*/u, '').trim();
 	}
-	const base = matched ? name.slice(matched.length) : name;
-	const flag = detectRegionFlag(base);
+	let prefix = '';
+	for (const pfx of (allPrefixes || [])) {
+		const candidate = pfx ? (name.startsWith(pfx) ? pfx : pfx.trimStart()) : '';
+		if (candidate && name.startsWith(candidate) && candidate.length > prefix.length) prefix = candidate;
+	}
+	const base = name.slice(prefix.length).replace(/\s*\[IPv6\]$/i, '').trimEnd();
+	let tail = '';
+	for (const suffix of (allTails || [])) {
+		const candidate = suffix ? suffix.trimEnd() : '';
+		if (candidate && base.endsWith(candidate) && candidate.length > tail.length) tail = candidate;
+	}
+	const original = tail ? base.slice(0, -tail.length) : base;
+	const flag = detectRegionFlag(original) || detectRegionFlag(prefix) || detectRegionFlag(tail) || detectRegionFlag(name);
 	if (!flag) return name;
-	return matched + flag + ' ' + base;
+	return flag + ' ' + name;
 }
 
 // 将 ISO 3166-1 alpha-2 国家代码转为国旗 emoji
@@ -1998,17 +2011,17 @@ function detectRegionFlag(name) {
 
 function escapeRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
-// 国家/地区名称关键词 -> ISO 代码。顺序敏感：中文名存在子串包含关系时，具体者在前（如 印尼 在 印度 前，朝鲜 在 韩国 前）。
+// 国家/地区名称关键词 -> ISO 代码。顺序敏感：具体地区优先（港澳台在中国之前，印尼在印度之前，朝鲜在韩国之前）。
 // 英文名自动加词边界，中文名按子串匹配。
 const COUNTRY_DATA = [
 	['KP', ['朝鲜', 'North Korea']],
 	['KR', ['韩国', '大韩民国', '首尔', 'South Korea', 'Korea']],
 	['ID', ['印尼', '印度尼西亚', 'Indonesia']],
 	['IN', ['印度', 'India']],
-	['CN', ['中国', '回国', 'China']],
 	['HK', ['香港', 'Hong Kong', 'HongKong']],
-	['TW', ['台湾', '臺灣', 'Taiwan']],
-	['MO', ['澳门', 'Macao', 'Macau']],
+	['TW', ['台湾', '臺灣', '台灣', 'Taiwan']],
+	['MO', ['澳门', '澳門', 'Macao', 'Macau']],
+	['CN', ['中国', '回国', 'China']],
 	['JP', ['日本', 'Japan', '东京', '大阪']],
 	['SG', ['新加坡', '狮城', 'Singapore']],
 	['MY', ['马来西亚', 'Malaysia']],
