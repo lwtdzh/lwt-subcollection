@@ -112,6 +112,7 @@ export default {
 					if (showIPv6) 订阅IPv6标记映射[link] = true;
 					if (filters.length) 订阅筛选映射[link] = filters;
 				} else {
+					if (filters.some(filter => filter.type === 'filteripv6') && 是否节点链接IPv6(link)) continue;
 					自建节点 += 添加节点名称修饰(link, prefix, tail, showIPv6) + '\n';
 				}
 			}
@@ -326,9 +327,10 @@ async function ADD(envadd) {
 // 例如: "@prefix(ppp) vless://xxx#香港" -> { prefix: "ppp", link: "vless://xxx#香港" }
 //      "@tail(备用) vless://xxx#香港" -> { tail: "备用", link: "vless://xxx#香港" }
 //      "@showipv6(y) vless://xxx@[2606:4700::1]:443#IPv6节点" -> 节点名末尾追加 [IPv6]
+//      "@filteripv6(y) https://sub.example.com" -> 移除 server 为 IPv6 的节点
 //      "@limit(5) https://sub.example.com" -> { filters: [{ type: "limit", count: 5, random: false }], link: "https://sub.example.com" }
 //      "@rdedupe(ip) https://sub.example.com" -> 按 server/IP 分组，每组随机保留 1 个节点
-//      "@prefix(ppp) @tail(备用) @showipv6(y) @rlimit(5) https://sub.example.com" -> 名称加 ppp 前缀和备用后缀，IPv6 节点末尾追加 [IPv6]，并随机保留 5 个节点
+//      "@prefix(ppp) @tail(备用) @showipv6(y) @filteripv6(y) @rlimit(5) https://sub.example.com" -> 名称加 ppp 前缀和备用后缀，过滤 IPv6 节点，并随机保留 5 个节点
 function 解析行标记(line) {
 	let rest = (line || '').trim();
 	const result = { link: '', prefix: '', tail: '', showIPv6: false, filters: [] };
@@ -362,8 +364,15 @@ function 解析行标记(line) {
 
 		const showIPv6Match = rest.match(/^@showipv6\(\s*([^)]+?)\s*\)\s*/i);
 		if (showIPv6Match) {
-			result.showIPv6 = /^(y|yes|true|1|on)$/i.test(showIPv6Match[1].trim());
+			result.showIPv6 = 是否启用修饰符(showIPv6Match[1]);
 			rest = rest.slice(showIPv6Match[0].length).trim();
+			continue;
+		}
+
+		const filterIPv6Match = rest.match(/^@filteripv6\(\s*([^)]+?)\s*\)\s*/i);
+		if (filterIPv6Match) {
+			if (是否启用修饰符(filterIPv6Match[1])) result.filters.push({ type: 'filteripv6' });
+			rest = rest.slice(filterIPv6Match[0].length).trim();
 			continue;
 		}
 
@@ -386,6 +395,10 @@ function 解析行标记(line) {
 
 	result.link = 清理链接包裹符(rest);
 	return result;
+}
+
+function 是否启用修饰符(value) {
+	return /^(y|yes|true|1|on)$/i.test(String(value || '').trim());
 }
 
 function 清理链接包裹符(link) {
@@ -473,6 +486,10 @@ function 应用节点去重(items, dedupe) {
 	return items.filter(item => !标准化去重地址(读取节点Server(item)) || selected.has(item));
 }
 
+function 应用IPv6过滤(items) {
+	return items.filter(item => !是否IPv6Server(读取节点Server(item)));
+}
+
 function 读取节点Server(item) {
 	if (!item) return '';
 	if (item.server) return item.server;
@@ -493,6 +510,7 @@ function 应用节点筛选列表(items, filters) {
 	return filters.reduce((list, filter) => {
 		if (filter.type === 'limit') return 应用节点数量限制(list, filter);
 		if (filter.type === 'dedupe') return 应用节点去重(list, filter);
+		if (filter.type === 'filteripv6') return 应用IPv6过滤(list);
 		return list;
 	}, items);
 }
@@ -1088,7 +1106,7 @@ async function KV(request, env, txt = 'ADD.txt', guest) {
 					---------------------------------------------------------------<br>
 					################################################################<br>
 					${FileName} 汇聚订阅编辑: 
-					<div style="color:#666;font-size:12px;margin:6px 0;">提示: 行首 <code>#</code> 表示注释；所有修饰符都使用 <code>@name(...)</code>。<code>@prefix(ppp)</code> 添加名称前缀，<code>@tail(-bak)</code> 添加名称后缀，<code>@showipv6(y)</code> 为 IPv6 节点名末尾追加 <code>[IPv6]</code>，<code>@limit(5)</code> 保留前 5 个节点，<code>@rlimit(5)</code> 随机保留 5 个节点，<code>@rdedupe(ip)</code> 按 IP 去重并随机保留端口。示例: <code>@prefix(ppp) @tail(-bak) @showipv6(y) @rdedupe(ip) https://xxx</code>。</div>
+					<div style="color:#666;font-size:12px;margin:6px 0;">提示: 行首 <code>#</code> 表示注释；所有修饰符都使用 <code>@name(...)</code>。<code>@prefix(ppp)</code> 添加名称前缀，<code>@tail(-bak)</code> 添加名称后缀，<code>@showipv6(y)</code> 为 IPv6 节点名末尾追加 <code>[IPv6]</code>，<code>@filteripv6(y)</code> 移除 IPv6 节点，<code>@limit(5)</code> 保留前 5 个节点，<code>@rlimit(5)</code> 随机保留 5 个节点，<code>@rdedupe(ip)</code> 按 IP 去重并随机保留端口。示例: <code>@prefix(ppp) @tail(-bak) @filteripv6(y) @rdedupe(ip) https://xxx</code>。</div>
 					<div class="editor-container">
 						${hasKV ? `
 						<textarea class="editor" 

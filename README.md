@@ -23,18 +23,19 @@
 - 订阅行：`@prefix(ppp) https://xxx` → 该订阅内**每个**节点名称都会加上 `ppp` 前缀。
 - 名称后缀：`@tail(-bak) https://xxx` → 该订阅内**每个**节点名称都会加上 `-bak` 后缀。
 - IPv6 标记：`@showipv6(y) https://xxx` → 若节点 `server` 是 IPv6，节点名称末尾会追加 `[IPv6]`。
+- IPv6 过滤：`@filteripv6(y) https://xxx` → 移除节点 `server` 为 IPv6 的节点，保留 IPv4/域名节点；单节点行也支持。
 - 顺序限制：`@limit(5) https://xxx` → 该订阅只保留前 5 个节点。
 - 随机限制：`@rlimit(5) https://xxx` → 该订阅每次随机保留 5 个节点。
 - IP 去重：`@rdedupe(ip) https://xxx` → 按节点 `server` 去重，每个 IP 随机保留一个端口。
-- 组合使用：`@prefix(ppp) @tail(-bak) @showipv6(y) @rdedupe(ip) @limit(5) https://xxx` → 该订阅先按 IP 随机去重，再保留前 5 个节点，并给节点名称加上 `ppp` 前缀、`-bak` 后缀和 IPv6 标记。
+- 组合使用：`@prefix(ppp) @tail(-bak) @filteripv6(y) @rdedupe(ip) @limit(5) https://xxx` → 该订阅先移除 IPv6 节点，再按 IP 随机去重，随后保留前 5 个节点，并给节点名称加上 `ppp` 前缀和 `-bak` 后缀。
 
 说明：
-- 所有行首修饰符都必须使用括号；`@prefix(x)`、`@tail(x)`、`@showipv6(y)`、`@limit(x)`、`@rlimit(x)`、`@rdedupe(ip)` 支持有空格和无空格写法，如 `@prefix(ppp)@tail(-bak)@showipv6(y)@rdedupe(ip)https://xxx`。
+- 所有行首修饰符都必须使用括号；`@prefix(x)`、`@tail(x)`、`@showipv6(y)`、`@filteripv6(y)`、`@limit(x)`、`@rlimit(x)`、`@rdedupe(ip)` 支持有空格和无空格写法，如 `@prefix(ppp)@tail(-bak)@filteripv6(y)@rdedupe(ip)https://xxx`。
 - 本地转换时，国旗放在整个节点名称最前，已有国旗也会移到最前。地区识别优先使用节点原名，再检查 `prefix`、`tail`，最后检查完整名称。例如原名为 `MASQUE·5` 时，`@prefix(中国大陆CN-)` 输出 `🇨🇳 中国大陆CN-MASQUE·5`，`@tail(China)` 输出 `🇨🇳 MASQUE·5China`。
 - 同一段名称中的港澳台关键词优先于“中国”：`中国香港`、`中国澳门`、`中国台湾` 分别识别为 `🇭🇰`、`🇲🇴`、`🇹🇼`，简体和繁体写法均支持。
 - 节点自身的 `#名称` 片段会保留。
 - `@dedupe(ip)` 保留每个 IP 下的第一个节点；`@rdedupe(ip)` 随机保留。Clash 输出会同步清理 `proxy-groups` 中已删除的节点名。
-- `@limit(x)` / `@rlimit(x)` 只对订阅行生效，`x` 为节点数量；多个筛选修饰符按书写顺序依次执行。
+- `@filteripv6(y)` 对单节点行和订阅行都生效；`@limit(x)` / `@rlimit(x)` 只对订阅行生效；多个筛选修饰符按书写顺序依次执行。
 - 明文/Base64 订阅会直接应用修饰符；返回 Clash/Sing-box 配置的订阅会先转为明文节点再统一处理（若转换失败则回退为不处理该订阅的修饰符）。
 
 ## KV 桶
